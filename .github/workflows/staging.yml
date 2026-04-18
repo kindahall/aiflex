@@ -1,0 +1,46 @@
+name: Deploy staging
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: staging
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify before deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_APP_URL: https://staging.aiflex.app
+
+  deploy:
+    name: Deploy to staging
+    needs: verify
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.aiflex.app
+    steps:
+      - uses: actions/checkout@v4
+      # Replace the block below with your actual deploy step (Vercel, Docker
+      # push + VPS, Fly.io, etc.). Keeping it as a placeholder so CI passes
+      # once secrets are wired — matches the brief's VPS Ubuntu + Nginx stack.
+      - name: Deploy (placeholder)
+        run: |
+          echo "Deploying commit ${GITHUB_SHA::7} to staging.aiflex.app"
+          echo "TODO: wire rsync/ssh/docker push to the staging VPS here."
+          echo "Required secrets: STAGING_SSH_KEY, STAGING_HOST, STAGING_USER"

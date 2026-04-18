@@ -42,7 +42,6 @@ export async function captureError(
   if (!dsn) return;
 
   try {
-    // @ts-expect-error — optional dep, not in package.json
     const sentry = await import("@sentry/nextjs").catch(() => null);
     if (!sentry) return;
     sentry.captureException(err, {

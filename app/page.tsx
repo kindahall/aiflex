@@ -8,6 +8,9 @@ import ContinueWatchingRow from "@/components/ContinueWatchingRow";
 import FollowingFeedRow from "@/components/FollowingFeedRow";
 import ContentRow from "@/components/ContentRow";
 import RecommendedRow from "@/components/RecommendedRow";
+import { TestimonialsSection } from "@/components/home/TestimonialsSection";
+import { PricingPreview } from "@/components/home/PricingPreview";
+import { TrustBadges } from "@/components/home/TrustBadges";
 import { CATALOG, byGenre, communityPicks, trending } from "@/lib/catalog";
 import { fetchPublicFeed, type PublicFeedItem } from "@/lib/client-api";
 import type { CatalogItem } from "@/lib/types";
@@ -119,6 +122,10 @@ export default function HomePage() {
           .concat(byGenre("action"))
           .concat(byGenre("noir"))}
       />
+
+      <TrustBadges />
+      <TestimonialsSection />
+      <PricingPreview />
 
       <div className="relative mx-auto mt-32 mb-40 max-w-5xl px-6 text-center">
         {/* Animated Background Blobs */}

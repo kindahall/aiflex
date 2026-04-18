@@ -1,0 +1,50 @@
+name: Deploy production
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify before deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_APP_URL: https://aiflex.app
+
+  deploy:
+    name: Deploy to production
+    needs: verify
+    runs-on: ubuntu-latest
+    # Use the "production" environment with required reviewers configured
+    # in GitHub settings so a deploy always waits for a human approval.
+    environment:
+      name: production
+      url: https://aiflex.app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy (placeholder)
+        run: |
+          echo "Deploying ${GITHUB_REF_NAME} to aiflex.app"
+          echo "TODO: wire rsync/ssh/docker push to the production VPS here."
+          echo "Required secrets: PROD_SSH_KEY, PROD_HOST, PROD_USER"
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

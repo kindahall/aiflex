@@ -7,6 +7,7 @@ import {
   updateUser,
 } from "@/lib/server-db";
 import type { UserRole } from "@/lib/types";
+import { logAdminAction, type AdminAction } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,6 +60,24 @@ export async function PATCH(
         { error: "Mise à jour échouée" },
         { status: 500 }
       );
+
+    // Log each distinct mutation (suspend/unsuspend/role change) as its own
+    // audit row so compliance queries stay readable.
+    const actions: AdminAction[] = [];
+    if (patch.suspended === true) actions.push("suspend_user");
+    else if (patch.suspended === false) actions.push("unsuspend_user");
+    if (patch.role === "admin" && target.role !== "admin") actions.push("promote_admin");
+    if (patch.role === "user" && target.role === "admin") actions.push("demote_admin");
+    for (const action of actions) {
+      logAdminAction({
+        adminId: admin.id,
+        action,
+        targetId: id,
+        targetType: "user",
+        metadata: { patch, before: { role: target.role, suspended: target.suspended } },
+      }).catch(() => {});
+    }
+
     return NextResponse.json({ user: toPublicUser(updated) });
   } catch (err) {
     if (err instanceof AuthError)

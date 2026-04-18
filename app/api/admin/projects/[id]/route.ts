@@ -6,6 +6,7 @@ import {
   updateProject,
 } from "@/lib/server-db";
 import type { Project } from "@/lib/types";
+import { logAdminAction } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await requireAdmin();
+    const admin = await requireAdmin();
     const { id } = await params;
     const body = (await req.json()) as Partial<Project>;
     delete body.id;
@@ -25,6 +26,13 @@ export async function PATCH(
     if (!p)
       return NextResponse.json({ error: "Introuvable" }, { status: 404 });
     const updated = await updateProject(id, body);
+    logAdminAction({
+      adminId: admin.id,
+      action: "approve_film",
+      targetId: id,
+      targetType: "film",
+      metadata: { patchKeys: Object.keys(body) },
+    }).catch(() => {});
     return NextResponse.json({ project: updated });
   } catch (err) {
     if (err instanceof AuthError)
@@ -38,9 +46,15 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    await requireAdmin();
+    const admin = await requireAdmin();
     const { id } = await params;
     await deleteProjectById(id);
+    logAdminAction({
+      adminId: admin.id,
+      action: "delete_film",
+      targetId: id,
+      targetType: "film",
+    }).catch(() => {});
     return NextResponse.json({ ok: true });
   } catch (err) {
     if (err instanceof AuthError)

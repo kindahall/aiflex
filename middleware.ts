@@ -11,6 +11,7 @@ import {
   reportLimiter,
   RateLimitError,
 } from "@/lib/rate-limit";
+import { shouldBlockForCsrf } from "@/lib/csrf";
 
 const SESSION_COOKIE = "aiflex_session";
 
@@ -106,55 +107,13 @@ function protectAdminRoutes(request: NextRequest): NextResponse | null {
   return null;
 }
 
-/**
- * Defense-in-depth CSRF check for state-changing API requests.
- *
- * Primary CSRF defense is `SameSite=strict` on the session cookie (see
- * lib/auth.ts), which already blocks cross-site POSTs from carrying credentials.
- * This Origin-header check is a second layer: reject any mutation whose
- * Origin is not one of the allowed origins.
- *
- * Skipped for:
- *   - Safe methods (GET, HEAD, OPTIONS)
- *   - Non-/api paths
- *   - Stripe webhook (/api/webhooks/stripe) which is signed separately
- *   - Cron endpoints (protected by CRON_SECRET + IP allowlist)
- */
-function csrfOriginCheck(request: NextRequest): NextResponse | null {
-  const { pathname } = request.nextUrl;
-  const method = request.method;
-  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
-  if (!pathname.startsWith("/api")) return null;
-  if (pathname === "/api/webhooks/stripe") return null;
-
-  const origin = request.headers.get("origin");
-  if (!origin) {
-    // Curl/server-to-server requests without an Origin (e.g., cron secret
-    // path) are authenticated by their own mechanism, so let them through.
-    return null;
-  }
-
-  const allowed = new Set<string>();
-  const appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL;
-  if (appUrl) allowed.add(appUrl.replace(/\/$/, ""));
-  const host = request.headers.get("host");
-  if (host) {
-    const proto = request.headers.get("x-forwarded-proto") || "https";
-    allowed.add(`${proto}://${host}`);
-  }
-
-  if (!allowed.has(origin)) {
-    return NextResponse.json({ error: "Origin not allowed" }, { status: 403 });
-  }
-  return null;
-}
-
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // CSRF Origin check before anything else
-  const csrfBlock = csrfOriginCheck(request);
-  if (csrfBlock) return csrfBlock;
+  // CSRF Origin check before anything else (see lib/csrf.ts for scope rules).
+  if (shouldBlockForCsrf(request)) {
+    return NextResponse.json({ error: "Origin not allowed" }, { status: 403 });
+  }
 
   // Admin gate first (works on both pages and APIs)
   const adminGate = protectAdminRoutes(request);

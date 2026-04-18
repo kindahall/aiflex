@@ -9,6 +9,7 @@ import {
   type PlatformSettings,
   type SiteContent,
 } from "@/lib/platform-settings";
+import { logAdminAction } from "@/lib/audit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,7 +47,7 @@ export async function GET() {
 
 export async function PATCH(req: Request) {
   try {
-    await requireAdmin();
+    const admin = await requireAdmin();
     const body = (await req.json()) as Partial<PlatformSettings> & {
       siteContent?: Partial<SiteContent>;
     };
@@ -124,6 +125,15 @@ export async function PATCH(req: Request) {
     }
 
     const settings = await updateSettings(patch);
+    if (Object.keys(patch).length > 0) {
+      logAdminAction({
+        adminId: admin.id,
+        action: "update_settings",
+        targetId: "platform",
+        targetType: "settings",
+        metadata: { changedKeys: Object.keys(patch) },
+      }).catch(() => {});
+    }
     return NextResponse.json({
       settings: {
         ...settings,
