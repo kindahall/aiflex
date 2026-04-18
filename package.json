@@ -39,15 +39,18 @@
     "@fal-ai/client": "^1.6.0",
     "@prisma/client": "^5.22.0",
     "@sentry/nextjs": "^10.49.0",
+    "@types/web-push": "^3.6.4",
     "bullmq": "^5.74.1",
     "ioredis": "^5.10.1",
     "next": "^15.5.0",
     "next-themes": "^0.4.6",
     "openai": "^6.34.0",
+    "posthog-node": "^5.29.2",
     "prisma": "^5.22.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "server-only": "^0.0.1"
+    "server-only": "^0.0.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",

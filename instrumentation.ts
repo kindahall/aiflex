@@ -14,4 +14,6 @@ export async function register() {
   }
 }
 
-export { captureRequestError } from "@sentry/nextjs";
+// Next 15 expects the hook to be named `onRequestError`. Sentry ships its
+// implementation as `captureRequestError` — re-export under the correct name.
+export { captureRequestError as onRequestError } from "@sentry/nextjs";

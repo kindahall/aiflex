@@ -59,10 +59,10 @@ async function getWebPush(): Promise<WebPushModule | null> {
   webPushInitTried = true;
 
   try {
-    // @ts-expect-error — optional dep, not in package.json
     const mod = await import("web-push").catch(() => null);
     if (!mod) return null;
-    const wp = (mod.default ?? mod) as WebPushModule;
+    const wp = ((mod as unknown as { default?: WebPushModule }).default ??
+      (mod as unknown as WebPushModule)) as WebPushModule;
     wp.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
     webPushModule = wp;
     return wp;

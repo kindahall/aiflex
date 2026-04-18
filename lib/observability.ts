@@ -95,11 +95,12 @@ async function getPostHog(): Promise<unknown> {
   if (!key) return null;
 
   try {
-    // @ts-expect-error — optional dep
     const mod = await import("posthog-node").catch(() => null);
     if (!mod) return null;
     const host = process.env.NEXT_PUBLIC_POSTHOG_HOST || "https://eu.posthog.com";
-    const PH = (mod as { PostHog: new (k: string, o: { host: string }) => unknown }).PostHog;
+    const PH = (mod as unknown as {
+      PostHog: new (k: string, o: { host: string }) => unknown;
+    }).PostHog;
     posthogClient = new PH(key, { host });
     return posthogClient;
   } catch {
