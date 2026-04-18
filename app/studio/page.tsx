@@ -101,9 +101,6 @@ function CardGrid({
           <button
             key={item.value}
             type="button"
-          <button
-            key={item.value}
-            type="button"
             onClick={() => onSelect(item.value)}
             className={`group relative overflow-hidden rounded-2xl border text-left transition-all duration-300 shrink-0 w-40 sm:w-48 md:w-auto snap-center md:snap-none ${aspectRatio} ${
               active
