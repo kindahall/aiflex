@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
+import { isFeatureEnabled } from "@/lib/feature-flags";
 import { selectAd } from "@/lib/ads";
 import type { AdFormat } from "@/lib/types/film";
 
@@ -13,6 +14,9 @@ export const dynamic = "force-dynamic";
  * Query: format=preroll_15|midroll_30|banner, projectId=<film>, [country]
  */
 export async function GET(req: Request) {
+  if (!(await isFeatureEnabled("adsEnabled"))) {
+    return new NextResponse(null, { status: 204 });
+  }
   const url = new URL(req.url);
   const format = url.searchParams.get("format") as AdFormat | null;
   const projectId = url.searchParams.get("projectId") ?? undefined;

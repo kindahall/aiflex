@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { startDubbing } from "@/lib/dubbing";
+import { isFeatureEnabled } from "@/lib/feature-flags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +27,12 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string }> }
 ) {
   try {
+    if (!(await isFeatureEnabled("dubbingEnabled"))) {
+      return NextResponse.json(
+        { error: "Le doublage automatique est désactivé." },
+        { status: 503 }
+      );
+    }
     const user = await requireUser();
     const { projectId } = await params;
     const body = (await req.json()) as Body;

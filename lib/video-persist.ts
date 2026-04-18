@@ -38,7 +38,12 @@ export async function persistVideo(
 export async function persistVideoWithAiWatermark(
   videoUrl: string,
   projectId: string,
-  sceneId: string
+  sceneId: string,
+  signingContext?: {
+    creatorUserId?: string;
+    model?: string;
+    prompt?: string;
+  }
 ): Promise<string> {
   const storage = getStorage();
   const key = `videos/${projectId}/${sceneId}.mp4`;
@@ -64,21 +69,38 @@ export async function persistVideoWithAiWatermark(
       );
     }
 
-    // 3. Best-effort C2PA signature (V8 §19.3) — no-op gracefully if
-    // c2patool/cert/key not configured. Computes a sha256 of the project
-    // id + scene id as the prompt-hash placeholder; agent.ts can pass a
-    // proper one once we hook the signing into the assembly step.
+    // 3. Best-effort C2PA signature (V8 §19.3) — no-op if c2patool/cert/key
+    // aren't configured. Fall back to looking up ownerId from the DB when
+    // signingContext.creatorUserId isn't passed by the caller.
     try {
-      const { signC2PA } = await import("./watermark");
       const crypto = await import("node:crypto");
+      const { signC2PA } = await import("./watermark");
+
+      let creatorUserId = signingContext?.creatorUserId;
+      if (!creatorUserId) {
+        try {
+          const { prisma } = await import("./prisma");
+          const project = await prisma.project.findUnique({
+            where: { id: projectId },
+            select: { ownerId: true },
+          });
+          creatorUserId = project?.ownerId ?? "system";
+        } catch {
+          creatorUserId = "system";
+        }
+      }
+
+      const model = signingContext?.model || "fal-seedance";
+      const hashInput = signingContext?.prompt ?? `${projectId}:${sceneId}`;
       const promptHash = crypto
         .createHash("sha256")
-        .update(`${projectId}:${sceneId}`)
+        .update(hashInput)
         .digest("hex");
+
       await signC2PA(tmpPath, {
-        creatorUserId: "system",
+        creatorUserId,
         filmId: projectId,
-        model: "fal-seedance",
+        model,
         generatedAt: new Date(),
         promptHash,
       });

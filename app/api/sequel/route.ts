@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireUser, AuthError } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { isFeatureEnabled } from "@/lib/feature-flags";
 import { orchestrateGeneration } from "@/lib/agent";
 import { notify } from "@/lib/notify";
 import { createOneShotCheckout } from "@/lib/stripe-oneshot";
@@ -45,6 +46,12 @@ interface SequelBody {
  */
 export async function POST(req: Request) {
   try {
+    if (!(await isFeatureEnabled("sequelsEnabled"))) {
+      return NextResponse.json(
+        { error: "La création de suites est désactivée." },
+        { status: 503 }
+      );
+    }
     const user = await requireUser();
     const body = (await req.json()) as SequelBody;
 

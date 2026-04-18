@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { isFeatureEnabled } from "@/lib/feature-flags";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
  * Shorts feed (V8 §24.6) — vertical 9:16 films < 60s. Returns a paged
- * cursor for infinite scroll.
+ * cursor for infinite scroll. Empty when shortsEnabled flag is off.
  *
  * Query: ?cursor=<id>&limit=20
  */
 export async function GET(req: Request) {
+  if (!(await isFeatureEnabled("shortsEnabled"))) {
+    return NextResponse.json({ items: [], nextCursor: null, disabled: true });
+  }
   const url = new URL(req.url);
   const cursor = url.searchParams.get("cursor");
   const limit = Math.max(1, Math.min(50, Number(url.searchParams.get("limit") || "20")));

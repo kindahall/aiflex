@@ -370,14 +370,21 @@ async function step_pollClips(jobId: string): Promise<void> {
         // before being stored. Private / cercle-privé content is persisted
         // as-is to save the ffmpeg pass.
         const needsWatermark = job.visibility === "public";
-        const persister = needsWatermark
-          ? persistVideoWithAiWatermark
-          : persistVideo;
-        const persisted = await persister(
-          result.videoUrl,
-          job.projectId || jobId,
-          scene.id
-        );
+        const persisted = needsWatermark
+          ? await persistVideoWithAiWatermark(
+              result.videoUrl,
+              job.projectId || jobId,
+              scene.id,
+              {
+                model: scene.seedanceModel,
+                prompt: scene.visualPrompt,
+              }
+            )
+          : await persistVideo(
+              result.videoUrl,
+              job.projectId || jobId,
+              scene.id
+            );
         updatedScenes.push({
           ...scene,
           seedanceStatus: status,
