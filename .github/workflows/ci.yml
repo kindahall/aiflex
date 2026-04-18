@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when a new commit is pushed to the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # Static checks: typecheck + production build. These don't need any
+  # external service or secret — they catch ~80% of regressions for ~0
+  # cost. Always run, on every PR and main push.
+  # ──────────────────────────────────────────────────────────────────
+  static:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+        env:
+          # Build doesn't call the providers — they're only contacted at
+          # request time. We pass placeholder vars so any future build-
+          # time validation has something non-empty.
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+
+  # ──────────────────────────────────────────────────────────────────
+  # End-to-end tests via Playwright. Optional: only runs if the e2e
+  # test files exist and Playwright is in package.json. Skipped on
+  # forks (no secrets needed but the install adds ~2 min).
+  # ──────────────────────────────────────────────────────────────────
+  e2e:
+    name: Playwright e2e
+    needs: static
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: Check Playwright is installed
+        id: check_pw
+        run: |
+          if [ -f node_modules/@playwright/test/package.json ]; then
+            echo "installed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "installed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::@playwright/test not in package.json — skipping e2e job"
+          fi
+      - name: Cache Playwright browsers
+        if: steps.check_pw.outputs.installed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        if: steps.check_pw.outputs.installed == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Run e2e
+        if: steps.check_pw.outputs.installed == 'true'
+        run: npm run e2e
+        env:
+          CI: "true"
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+      - name: Upload Playwright report on failure
+        if: failure() && steps.check_pw.outputs.installed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

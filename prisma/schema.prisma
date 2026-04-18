@@ -1,0 +1,1025 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+// ===========================================================================
+// USER + AUTH
+// ===========================================================================
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String
+  passwordHash    String
+  role            String    @default("user")
+  suspended       Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  avatarSeed      String?
+  bio             String?
+  emailVerified   Boolean   @default(false)
+  emailVerifiedAt DateTime?
+  usageMonth      String?
+  usageVideos     Int       @default(0)
+
+  // Stripe/billing
+  plan                 String    @default("free")
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  planExpiresAt        DateTime?
+
+  // OAuth
+  oauthProvider String?
+  oauthId       String?
+
+  // 2FA
+  totpSecret      String?
+  totpEnabled     Boolean  @default(false)
+  totpBackupCodes String[] @default([])
+
+  // Parental controls
+  parentalPin      String?
+  maxContentRating String?
+
+  // V7/V8 additions
+  credits           Int       @default(0) // avoirs en centimes
+  ageVerified       String    @default("none") // "none" | "self_declared" | "verified"
+  ageVerifiedAt     DateTime?
+  elevenLabsVoiceId String?
+  downloadQuota     Int       @default(10)
+  referralCode      String?   @unique
+  stripeConnectId   String?   @unique // Stripe Connect Express account id
+
+  sessions          Session[]
+  projects          Project[]
+  likes             Like[]
+  watchlist         Watchlist[]
+  comments          Comment[]
+  notifications     Notification[]
+  watchProgress     WatchProgress[]
+  reports           Report[]                  @relation("Reporter")
+  followers         Follow[]                  @relation("Followed")
+  following         Follow[]                  @relation("Follower")
+  pushSubscriptions PushSubscription[]
+  profiles          Profile[]
+  sentMessages      DirectMessage[]           @relation("Sender")
+  conversations     ConversationParticipant[]
+  collaborations    Collaborator[]
+  tipsSent          Tip[]                     @relation("TipSender")
+  tipsReceived      Tip[]                     @relation("TipReceiver")
+
+  subscription      Subscription?
+  generationJobs    GenerationJob[]
+  views             FilmView[]
+  payouts           CreatorPayout[]
+  boosts            FilmBoost[]
+  moderationLogs    ModerationLog[]
+  auditLogs         AdminAuditLog[]
+  consents          ConsentRecord[]
+  ppvPurchases      PpvPurchase[]
+  referralLink      ReferralLink?
+  creatorPlan       CreatorPlan?
+  characters        Character[]
+  collaboratorSplit CollaboratorSplit[] @relation("SplitUser")
+
+  @@index([email])
+  @@index([oauthProvider, oauthId])
+  @@index([role])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+}
+
+// ===========================================================================
+// PROJECT = FILM (entité unifiée : films, épisodes, suites)
+// ===========================================================================
+
+model Project {
+  id               String    @id @default(cuid())
+  ownerId          String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  stage            String
+  idea             String
+  genre            String
+  format           String
+  tone             String
+  endingHint       String?
+  concept          Json?
+  scenario         Json?
+  scenes           Json?
+  seriesId         String?
+  series           Series?   @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  seriesTitle      String?
+  episodeNumber    Int?
+  seasonNumber     Int?
+  coverUrl         String?
+  published        Boolean   @default(false)
+  visibility       String    @default("private") // "private" | "private_circle" | "public"
+  publishedAt      DateTime?
+  views            Int       @default(0)
+  likes            Int       @default(0)
+  author           String?
+  audioTrackUrl    String?
+  audioTrackStatus String?
+  contentRating    String?
+
+  // V7 : film metadata
+  uploadType        String  @default("ai_generated") // "ai_generated" | "user_upload"
+  title             String?
+  synopsis          String?
+  durationMinutes   Int?
+  fileSize          BigInt?
+  originalFileName  String?
+  status            String  @default("pending")
+  composition       Json?
+  errorMessage      String?
+  outputUrl         String?
+  thumbnailUrl      String?
+  thumbnailVariants Json?
+  slug              String? @unique
+  isFreeContent     Boolean @default(false)
+  isAdult           Boolean @default(false)
+
+  // Cercle privé
+  inviteToken   String?  @unique
+  invitedEmails String[] @default([])
+
+  // Suites — clef du système
+  parentFilmId          String?
+  parentFilm            Project?  @relation("FilmSequels", fields: [parentFilmId], references: [id], onDelete: SetNull)
+  sequels               Project[] @relation("FilmSequels")
+  allowSequels          Boolean   @default(false)
+  allowPublicSequels    Boolean   @default(false)
+  royaltyPercent        Int       @default(10) // 0 | 5 | 10 | 15 | 20
+  notifyOnSequel        Boolean   @default(true)
+  isDisavowed           Boolean   @default(false)
+  maxSequels            Int?      @default(100)
+  sequelsUnlockAt       DateTime?
+  requireSequelApproval Boolean   @default(false)
+
+  // Modération admin (uploads publics uniquement)
+  adminReviewStatus String? // null | "pending_review" | "approved" | "rejected" | "awaiting_parent_approval"
+  adminReviewNote   String?
+  reviewedBy        String?
+  reviewedAt        DateTime?
+  creditIssued      Boolean   @default(false)
+  creditAmount      Int?
+
+  // Paiement
+  stripePaymentId String?
+  amountPaid      Int? // centimes
+  ppvPrice        Int?
+
+  // Recommandations (pgvector)
+  embedding Unsupported("vector(1536)")?
+
+  owner              User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  collaborators      Collaborator[]
+  collaboratorSplits CollaboratorSplit[]
+  likeEntries        Like[]
+  watchlistEntries   Watchlist[]
+  comments           Comment[]
+  notifications      Notification[]
+  watchProgress      WatchProgress[]
+  filmViews          FilmView[]
+  boosts             FilmBoost[]
+  payouts            CreatorPayout[]
+  adImpressions      AdImpression[]
+  generationJobs     GenerationJob[]
+  subtitles          Subtitle[]
+  dubs               Dub[]
+  ppvPurchases       PpvPurchase[]
+  sceneVersions      SceneVersion[]
+  dailyStats         DailyFilmStats[]
+  challengeEntries   ChallengeEntry[]
+  characterLicenses  CharacterLicense[]
+
+  @@index([ownerId])
+  @@index([published, visibility])
+  @@index([genre])
+  @@index([status])
+  @@index([parentFilmId])
+  @@index([adminReviewStatus])
+  @@index([seriesId])
+  @@index([isAdult])
+}
+
+// ===========================================================================
+// SÉRIES (regroupement d'épisodes = Project avec seriesId)
+// ===========================================================================
+
+model Series {
+  id          String  @id @default(cuid())
+  ownerId     String
+  title       String
+  synopsis    String?
+  genre       String
+  visibility  String  @default("private")
+  releaseMode String  @default("binge") // "binge" | "weekly"
+  coverUrl    String?
+  status      String  @default("pending")
+
+  allowSequels       Boolean @default(false)
+  allowPublicSequels Boolean @default(false)
+  royaltyPercent     Int     @default(10)
+  notifyOnSequel     Boolean @default(true)
+
+  stripePaymentId   String?
+  amountPaid        Int?
+  adminReviewStatus String?
+  adminReviewNote   String?
+  reviewedBy        String?
+  reviewedAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  episodes Project[]
+  boosts   FilmBoost[]
+
+  @@index([ownerId])
+  @@index([visibility])
+}
+
+// ===========================================================================
+// ABONNEMENT
+// ===========================================================================
+
+model Subscription {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  stripeCustomerId     String   @unique
+  stripeSubscriptionId String   @unique
+  status               String // "active" | "canceled" | "past_due" | "trialing"
+  plan                 String // "light" | "premium" | "family" | "light_yearly" | "premium_yearly"
+  billingCycle         String   @default("monthly") // "monthly" | "yearly"
+  currentPeriodEnd     DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ===========================================================================
+// BUNDLE CRÉATEUR (V8 §21.5) — "Patreon-like" single-creator subscription
+// ===========================================================================
+
+model CreatorBundleSubscription {
+  id                   String   @id @default(cuid())
+  subscriberId         String   // the viewer paying the bundle
+  creatorId            String   // the creator whose catalogue is unlocked
+  stripeSubscriptionId String   @unique
+  status               String // "active" | "canceled" | "past_due"
+  priceCents           Int
+  currentPeriodEnd     DateTime
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([subscriberId, creatorId])
+  @@index([subscriberId])
+  @@index([creatorId])
+  @@index([status])
+}
+
+// ===========================================================================
+// GENERATION JOB (orchestrateur agent)
+// ===========================================================================
+
+model GenerationJob {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  mode            String // "express" | "assisted"
+  format          String
+  visibility      String
+  userPrompt      String
+  scheduledAt     DateTime?
+  launchAt        DateTime?
+  formData        Json
+  scenarioData    Json?
+  characterImages Json?
+  validatedData   Json?
+
+  status       String  @default("pending") // pending | awaiting_payment | analyzing | scenario_ready | awaiting_validation | scheduled | generating | done | error
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([launchAt])
+}
+
+// ===========================================================================
+// VUES + REVENUE
+// ===========================================================================
+
+model FilmView {
+  id                String   @id @default(cuid())
+  projectId         String?
+  project           Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId         String?
+  percentageWatched Int
+  userPlan          String // "free" | "light" | "premium" | "family"
+  watchedAt         DateTime @default(now())
+
+  @@index([projectId])
+  @@index([userId])
+  @@index([watchedAt])
+}
+
+model CreatorPayout {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  month          String // "2026-04"
+  totalViews     Int
+  qualifiedViews Int
+  grossAmount    Int // centimes
+  netAmount      Int
+  payoutType     String    @default("primary") // "primary" | "royalty" | "collab" | "bundle"
+  status         String    @default("pending") // "pending" | "paid" | "below_threshold" | "failed"
+  stripePayoutId String?
+  paidAt         DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([userId, projectId, month, payoutType])
+  @@index([userId])
+  @@index([status])
+}
+
+model FilmBoost {
+  id              String   @id @default(cuid())
+  projectId       String?
+  project         Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  seriesId        String?
+  series          Series?  @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            String // "homepage_24h" | "category_7d" | "badge_30d"
+  startAt         DateTime
+  endAt           DateTime
+  amountPaid      Int
+  stripePaymentId String?
+  createdAt       DateTime @default(now())
+
+  @@index([endAt])
+  @@index([type])
+}
+
+// ===========================================================================
+// PUBLICITÉ
+// ===========================================================================
+
+model AdAccount {
+  id               String       @id @default(cuid())
+  companyName      String
+  email            String       @unique
+  contactName      String?
+  stripeCustomerId String?      @unique
+  status           String       @default("active") // "active" | "suspended"
+  campaigns        AdCampaign[]
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+}
+
+model AdCampaign {
+  id            String         @id @default(cuid())
+  adAccountId   String
+  adAccount     AdAccount      @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  name          String
+  format        String // "preroll_15" | "midroll_30" | "banner"
+  videoUrl      String?
+  imageUrl      String?
+  landingUrl    String
+  targetGenre   String?
+  targetCountry String?
+  budgetCents   Int
+  spentCents    Int            @default(0)
+  cpmCents      Int
+  status        String         @default("active") // "active" | "paused" | "ended"
+  startAt       DateTime
+  endAt         DateTime?
+  impressions   AdImpression[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([status])
+  @@index([adAccountId])
+}
+
+model AdImpression {
+  id         String     @id @default(cuid())
+  campaignId String
+  campaign   AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  projectId  String?
+  project    Project?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  userId     String
+  format     String
+  costCents  Int
+  watchedAt  DateTime   @default(now())
+
+  @@index([campaignId])
+  @@index([watchedAt])
+}
+
+// ===========================================================================
+// COMMUNAUTÉ
+// ===========================================================================
+
+model Like {
+  id        String   @id @default(cuid())
+  userId    String
+  projectId String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+}
+
+model Watchlist {
+  id         String   @id @default(cuid())
+  userId     String
+  projectId  String
+  addedAt    DateTime @default(now())
+  shareToken String?  @unique
+  isPublic   Boolean  @default(false)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+}
+
+model Comment {
+  id         String    @id @default(cuid())
+  projectId  String
+  authorId   String
+  authorName String
+  body       String
+  parentId   String?
+  replyCount Int       @default(0)
+  createdAt  DateTime  @default(now())
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author     User      @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  parent     Comment?  @relation("Replies", fields: [parentId], references: [id])
+  replies    Comment[] @relation("Replies")
+
+  @@index([projectId])
+  @@index([parentId])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  kind      String
+  message   String
+  href      String?
+  actorId   String?
+  actorName String?
+  projectId String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([userId, read])
+}
+
+model WatchProgress {
+  id             String   @id @default(cuid())
+  userId         String
+  projectId      String
+  profileId      String?
+  lastSceneIndex Int
+  progress       Float
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+}
+
+model Report {
+  id            String    @id @default(cuid())
+  reporterId    String
+  reporterEmail String
+  targetType    String // "project" | "comment" | "user" | "sequel"
+  targetId      String
+  reason        String // "inappropriate" | "copyright" | "csam" | "hate" | "spam" | "other"
+  detail        String?
+  status        String    @default("pending") // "pending" | "reviewed" | "dismissed" | "actioned"
+  action        String? // "removed" | "warned" | "suspended" | "none"
+  createdAt     DateTime  @default(now())
+  reviewedAt    DateTime?
+  reviewedBy    String?
+  reporter      User      @relation("Reporter", fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([reason])
+}
+
+model Follow {
+  id         String   @id @default(cuid())
+  followerId String
+  followedId String
+  createdAt  DateTime @default(now())
+  follower   User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followed   User     @relation("Followed", fields: [followedId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followedId])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, endpoint])
+}
+
+// ===========================================================================
+// PLATFORM
+// ===========================================================================
+
+model PlatformSettings {
+  id                     String  @id @default("singleton")
+  narrativeModel         String  @default("gpt-5.4")
+  reasoningLevel         String  @default("medium")
+  videoModel             String  @default("fal-ai/bytedance/seedance/v2/pro/text-to-video")
+  allowSignups           Boolean @default(true)
+  maxScenesPerProject    Int     @default(24)
+  monthlyVideoQuota      Int     @default(30)
+  apiKeys                Json    @default("{}")
+  siteContent            Json
+  ttsModel               String  @default("openai-tts-1-hd")
+  defaultVoice           String  @default("nova")
+  sequelsEnabled         Boolean @default(true)
+  adsEnabled             Boolean @default(false)
+  shortsEnabled          Boolean @default(false)
+  dubbingEnabled         Boolean @default(false)
+  recommendationsEnabled Boolean @default(false)
+  rateLimits             Json    @default("{}")
+}
+
+// ===========================================================================
+// PROFILS MULTI-UTILISATEURS
+// ===========================================================================
+
+model Profile {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String
+  avatarSeed  String?
+  avatarUrl   String?
+  isChild     Boolean  @default(false)
+  maxRating   String   @default("PG-13")
+  parentalPin String? // hash bcrypt pour profils non-child
+  ageRating   String   @default("all") // "kids" | "teens" | "all" | "adult"
+  curfewHour  Int? // heure couvre-feu (0-23) pour profils enfants
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ===========================================================================
+// MESSAGERIE
+// ===========================================================================
+
+model Conversation {
+  id            String                    @id @default(cuid())
+  lastMessageAt DateTime                  @default(now())
+  createdAt     DateTime                  @default(now())
+  messages      DirectMessage[]
+  participants  ConversationParticipant[]
+}
+
+model ConversationParticipant {
+  id             String       @id @default(cuid())
+  conversationId String
+  userId         String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+}
+
+model DirectMessage {
+  id             String       @id @default(cuid())
+  conversationId String
+  senderId       String
+  body           String
+  read           Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender         User         @relation("Sender", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@index([senderId])
+}
+
+// ===========================================================================
+// COLLABORATION
+// ===========================================================================
+
+model Collaborator {
+  id        String   @id @default(cuid())
+  projectId String
+  userId    String
+  role      String   @default("viewer") // "viewer" | "editor" | "owner"
+  invitedBy String
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+model CollaboratorSplit {
+  id        String  @id @default(cuid())
+  projectId String
+  userId    String
+  percent   Int // 0-100, somme = 100 par projectId
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation("SplitUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+}
+
+// ===========================================================================
+// TIPS / MONÉTISATION PAR-VIEW
+// ===========================================================================
+
+model Tip {
+  id              String   @id @default(cuid())
+  fromUserId      String
+  toUserId        String
+  amount          Int
+  currency        String   @default("eur")
+  stripePaymentId String?
+  message         String?
+  createdAt       DateTime @default(now())
+  sender          User     @relation("TipSender", fields: [fromUserId], references: [id], onDelete: Cascade)
+  receiver        User     @relation("TipReceiver", fields: [toUserId], references: [id], onDelete: Cascade)
+
+  @@index([toUserId])
+}
+
+model PpvPurchase {
+  id              String   @id @default(cuid())
+  userId          String
+  projectId       String
+  amountCents     Int
+  stripePaymentId String
+  purchasedAt     DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@index([userId])
+}
+
+model PromoCode {
+  id        String    @id @default(cuid())
+  code      String    @unique
+  type      String // "discount" | "free_month" | "referral"
+  value     Int // % ou mois
+  maxUses   Int?
+  usedCount Int       @default(0)
+  expiresAt DateTime?
+  createdBy String?
+  createdAt DateTime  @default(now())
+}
+
+model ReferralLink {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  code        String   @unique
+  signups     Int      @default(0)
+  conversions Int      @default(0)
+  earnedCents Int      @default(0)
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CreatorPlan {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  plan                 String // "creator_pro_basic" | "creator_pro_standard" | "creator_pro_premium"
+  monthlyQuota         Json // { episode_5: 2, episode_15: 1, short_30: 0, film_90: 0 }
+  usedThisMonth        Json     @default("{}")
+  resetAt              DateTime
+  stripeSubscriptionId String?  @unique
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ===========================================================================
+// MODÉRATION + AUDIT (B1)
+// ===========================================================================
+
+model ModerationLog {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentType String // "prompt" | "comment" | "upload" | "dm"
+  content     String
+  decision    String // "allowed" | "blocked" | "flagged_for_review"
+  categories  String[] @default([])
+  score       Float?
+  provider    String? // "openai" | "claude"
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([decision])
+  @@index([createdAt])
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  adminId    String
+  admin      User     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  action     String
+  targetId   String
+  targetType String
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([adminId])
+  @@index([createdAt])
+  @@index([targetType, targetId])
+}
+
+model ConsentRecord {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // "cgu" | "privacy" | "cookies_analytics" | "cookies_marketing" | "newsletter"
+  version   String
+  accepted  Boolean
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([type])
+}
+
+model AccessLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  ipAddress String
+  userAgent String?
+  path      String
+  method    String
+  status    Int
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model DMCANotice {
+  id              String    @id @default(cuid())
+  claimantName    String
+  claimantEmail   String
+  targetProjectId String
+  copyrightWork   String
+  goodFaithStmt   Boolean
+  signature       String
+  status          String    @default("received") // "received" | "actioned" | "counter_notified" | "dismissed"
+  actionedAt      DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([targetProjectId])
+  @@index([status])
+}
+
+// ===========================================================================
+// SOUS-TITRES & DOUBLAGE (B4)
+// ===========================================================================
+
+model Subtitle {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  lang      String
+  url       String
+  auto      Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, lang])
+  @@index([projectId])
+}
+
+model Dub {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  lang      String
+  audioUrl  String
+  createdAt DateTime @default(now())
+
+  @@unique([projectId, lang])
+  @@index([projectId])
+}
+
+// ===========================================================================
+// ANALYTICS (B5)
+// ===========================================================================
+
+model DailyFilmStats {
+  id                   String   @id @default(cuid())
+  projectId            String
+  project              Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  date                 DateTime
+  views                Int      @default(0)
+  uniqueViewers        Int      @default(0)
+  avgCompletion        Float    @default(0)
+  revenueCents         Int      @default(0)
+  thumbnailImpressions Int      @default(0)
+  thumbnailClicks      Int      @default(0)
+
+  @@unique([projectId, date])
+  @@index([projectId])
+  @@index([date])
+}
+
+model SceneVersion {
+  id         String   @id @default(cuid())
+  projectId  String
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sceneIndex Int
+  prompt     String
+  clipUrl    String?
+  active     Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, sceneIndex])
+}
+
+// ===========================================================================
+// CHALLENGES (B6)
+// ===========================================================================
+
+model Challenge {
+  id              String           @id @default(cuid())
+  title           String
+  description     String
+  theme           String
+  startAt         DateTime
+  endAt           DateTime
+  prizePoolCents  Int
+  winnerProjectId String?
+  status          String           @default("open") // "open" | "judging" | "closed"
+  createdAt       DateTime         @default(now())
+  entries         ChallengeEntry[]
+
+  @@index([status])
+  @@index([endAt])
+}
+
+model ChallengeEntry {
+  id          String    @id @default(cuid())
+  challengeId String
+  projectId   String
+  votes       Int       @default(0)
+  createdAt   DateTime  @default(now())
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  project     Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([challengeId, projectId])
+}
+
+// ===========================================================================
+// IA AVANCÉE : PERSONNAGES (B10)
+// ===========================================================================
+
+model Character {
+  id                String                      @id @default(cuid())
+  creatorId         String
+  creator           User                        @relation(fields: [creatorId], references: [id], onDelete: Cascade)
+  name              String
+  description       String
+  facialEmbedding   Unsupported("vector(512)")?
+  referenceImageUrl String?
+  public            Boolean                     @default(false)
+  licensePercent    Int? // si public, royalty par vue sur films utilisant ce perso
+  createdAt         DateTime                    @default(now())
+  licenses          CharacterLicense[]
+
+  @@index([creatorId])
+  @@index([public])
+}
+
+model CharacterLicense {
+  id             String    @id @default(cuid())
+  characterId    String
+  character      Character @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  borrowerId     String
+  projectId      String?
+  project        Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  royaltyPercent Int
+  createdAt      DateTime  @default(now())
+
+  @@index([characterId])
+  @@index([borrowerId])
+}
+
+// ===========================================================================
+// AD LEAD (V8 §A4 — /advertise lead capture)
+// ===========================================================================
+
+model AdLead {
+  id          String   @id @default(cuid())
+  companyName String
+  contactName String
+  email       String
+  phone       String?
+  budgetCents Int? // estimated monthly budget the lead reports
+  formats     String[] @default([]) // "preroll_15" | "midroll_30" | "banner"
+  message     String?
+  status      String   @default("new") // "new" | "contacted" | "converted" | "rejected"
+  createdAt   DateTime @default(now())
+
+  @@index([status])
+  @@index([email])
+}
+
+// ===========================================================================
+// COMMENT LIKE (V8 §24.1)
+// ===========================================================================
+
+model CommentLike {
+  id        String   @id @default(cuid())
+  userId    String
+  commentId String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, commentId])
+  @@index([commentId])
+}
+
+// ===========================================================================
+// USER BLOCK (V8 §24.4 — moderation safety)
+// ===========================================================================
+
+model Block {
+  id            String   @id @default(cuid())
+  userId        String   // who blocks
+  blockedUserId String   // who is blocked
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, blockedUserId])
+  @@index([userId])
+  @@index([blockedUserId])
+}
+
+// ===========================================================================
+// API USAGE TRACKING (V8 §25.8)
+// ===========================================================================
+
+model DailyApiUsage {
+  id              String   @id @default(cuid())
+  userId          String
+  date            DateTime // UTC midnight of the day
+  // Counters — each lib bumps its own column at call time
+  claudeTokens    Int      @default(0)
+  openaiTokens    Int      @default(0)
+  fluxImages      Int      @default(0)
+  seedanceSeconds Int      @default(0)
+  whisperMinutes  Int      @default(0)
+  elevenLabsChars Int      @default(0)
+
+  @@unique([userId, date])
+  @@index([userId])
+  @@index([date])
+}

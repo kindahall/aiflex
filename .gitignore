@@ -1,0 +1,44 @@
+# Deps
+node_modules/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Env
+.env
+.env*.local
+
+# Runtime DB (prototype file-backed store)
+.data/
+
+# Editor
+.DS_Store
+.vscode/
+.idea/
+
+# User uploads (use R2/S3 in production)
+public/uploads/
+
+# Logs
+*.log
+
+# TypeScript build cache
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Test artifacts
+coverage/
+playwright-report/
+test-results/
+.vitest-cache/
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Misc
+*.swp
+*.swo
+Thumbs.db

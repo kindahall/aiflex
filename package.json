@@ -1,0 +1,111 @@
+{
+  "name": "aiflex",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:install": "playwright install --with-deps chromium",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "cron": "tsx scripts/cron.ts",
+    "backup:db": "bash scripts/backup-db.sh",
+    "payouts:preview": "tsx scripts/payouts-preview.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "prettier --write",
+      "next lint --fix --file"
+    ],
+    "*.{json,md,css}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.70.0",
+    "@fal-ai/client": "^1.6.0",
+    "@prisma/client": "^5.22.0",
+    "next": "^15.5.0",
+    "next-themes": "^0.4.6",
+    "openai": "^6.34.0",
+    "prisma": "^5.22.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "22.9.0",
+    "@types/node-cron": "^3.0.11",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "@vitest/ui": "^4.1.4",
+    "autoprefixer": "10.4.20",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "^15.5.0",
+    "husky": "^9.1.7",
+    "jsdom": "^29.0.2",
+    "lint-staged": "^15.2.10",
+    "node-cron": "^3.0.3",
+    "postcss": "8.4.49",
+    "prettier": "^3.3.3",
+    "tailwindcss": "3.4.14",
+    "tsx": "^4.19.0",
+    "typescript": "5.6.3",
+    "vitest": "^4.1.4",
+    "vitest-mock-extended": "^4.0.0"
+  },
+  "//deps-to-add-as-features-land": {
+    "description": "These V7/V8 features each require an npm install when you wire them up. Deliberately kept out of dependencies so the install stays lean.",
+    "stripe-billing": [
+      "stripe"
+    ],
+    "email-resend": [
+      "resend"
+    ],
+    "error-monitoring": [
+      "@sentry/nextjs"
+    ],
+    "product-analytics": [
+      "posthog-node",
+      "posthog-js"
+    ],
+    "persistent-queue": [
+      "bullmq",
+      "ioredis"
+    ],
+    "pwa-push": [
+      "web-push"
+    ],
+    "image-processing": [
+      "sharp"
+    ],
+    "elevenlabs-voice": [
+      "elevenlabs"
+    ],
+    "pgvector-orm": [
+      "pgvector"
+    ],
+    "charts-analytics": [
+      "recharts"
+    ],
+    "feature-flags": [
+      "@growthbook/growthbook-react"
+    ]
+  }
+}
