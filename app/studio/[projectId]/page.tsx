@@ -311,7 +311,7 @@ export default function ProjectWorkspacePage() {
       />
 
       <div className="mx-auto max-w-5xl px-6 pb-24">
-        <div className="mb-8 rounded-xl border border-flex-border bg-flex-panel p-4">
+        <div className="mb-8 rounded-xl glass-panel relative overflow-hidden p-5 shadow-obsidian">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-widest text-flex-muted">
@@ -325,7 +325,7 @@ export default function ProjectWorkspacePage() {
             <div className="flex items-center gap-2">
               <Link
                 href="/dashboard"
-                className="rounded-lg border border-flex-border bg-flex-card px-3 py-1.5 text-[11px] font-semibold text-flex-text transition hover:border-flex-accent"
+                className="rounded-lg glass-panel px-3 py-1.5 text-[11px] font-semibold text-flex-text transition"
               >
                 ← Dashboard
               </Link>
@@ -343,7 +343,7 @@ export default function ProjectWorkspacePage() {
         </div>
 
         {error && (
-          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+          <div className="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200 shadow-[0_0_20px_rgba(239,68,68,0.2)]">
             ⚠ {error}
           </div>
         )}
@@ -352,8 +352,8 @@ export default function ProjectWorkspacePage() {
 
         {/* STEP: idea → concept */}
         {!loading && project.stage === "idea" && (
-          <div className="rounded-2xl border border-flex-border bg-flex-card p-10 text-center">
-            <h3 className="mb-3 text-3xl font-black">
+          <div className="rounded-2xl glass-panel p-16 text-center shadow-cinema relative overflow-hidden animated-border">
+            <h3 className="mb-3 text-4xl font-black hologram-text">
               Prêt à enrichir ton idée ?
             </h3>
             <p className="mx-auto mb-6 max-w-xl text-sm text-flex-muted">
@@ -363,9 +363,9 @@ export default function ProjectWorkspacePage() {
             <button
               type="button"
               onClick={generateConcept}
-              className="rounded-xl bg-flex-accent px-8 py-3 text-base font-bold text-white transition hover:brightness-110"
+              className="rounded-xl px-10 py-4 mt-4 text-lg font-bold text-white bg-gradient-to-r from-flex-accent to-flex-accent2 shadow-[0_0_30px_rgba(var(--flex-accent)/0.5)] transition-all hover:scale-105 hover:shadow-[0_0_50px_rgba(var(--flex-accent)/0.7)]"
             >
-              ✦ Générer le concept
+              <span className="mr-2">✦</span> Générer le concept
             </button>
           </div>
         )}
@@ -383,14 +383,14 @@ export default function ProjectWorkspacePage() {
               <button
                 type="button"
                 onClick={generateConcept}
-                className="rounded-lg border border-flex-border bg-flex-panel px-5 py-3 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
+                className="rounded-lg glass-panel px-5 py-3 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
               >
                 ↻ Reformuler le concept
               </button>
               <button
                 type="button"
                 onClick={generateScenario}
-                className="rounded-lg bg-flex-accent px-7 py-3 text-sm font-bold text-white transition hover:brightness-110"
+                className="rounded-lg bg-gradient-to-r from-flex-accent to-flex-accent2 px-7 py-3 text-sm font-bold text-white shadow-[0_0_15px_rgba(var(--flex-accent)/0.4)] transition hover:scale-[1.03]"
               >
                 Valider & écrire le scénario →
               </button>
@@ -412,14 +412,14 @@ export default function ProjectWorkspacePage() {
               <button
                 type="button"
                 onClick={generateScenario}
-                className="rounded-lg border border-flex-border bg-flex-panel px-5 py-3 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
+                className="rounded-lg glass-panel px-5 py-3 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
               >
                 ↻ Réécrire le scénario
               </button>
               <button
                 type="button"
                 onClick={generateScenes}
-                className="rounded-lg bg-flex-accent px-7 py-3 text-sm font-bold text-white transition hover:brightness-110"
+                className="rounded-lg bg-gradient-to-r from-flex-accent to-flex-accent2 px-7 py-3 text-sm font-bold text-white shadow-[0_0_15px_rgba(var(--flex-accent)/0.4)] transition hover:scale-[1.03]"
               >
                 Découper en scènes →
               </button>
@@ -484,7 +484,7 @@ export default function ProjectWorkspacePage() {
                   <button
                     type="button"
                     onClick={() => save({ stage: "assembly" })}
-                    className="rounded-lg bg-flex-accent px-7 py-3 text-sm font-bold text-white transition hover:brightness-110"
+                    className="rounded-lg bg-gradient-to-r from-flex-accent to-flex-accent2 px-7 py-3 text-sm font-bold text-white shadow-[0_0_15px_rgba(var(--flex-accent)/0.4)] transition hover:scale-[1.03]"
                   >
                     Assembler le film →
                   </button>
@@ -617,7 +617,7 @@ export default function ProjectWorkspacePage() {
                 <button
                   type="button"
                   onClick={() => save({ stage: "scenes" })}
-                  className="rounded-lg border border-flex-border bg-flex-panel px-5 py-3 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
+                  className="rounded-lg glass-panel px-5 py-3 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
                 >
                   ← Retour aux scènes
                 </button>
@@ -658,7 +658,7 @@ export default function ProjectWorkspacePage() {
               </Link>
               <Link
                 href="/studio"
-                className="rounded-lg border border-flex-border bg-flex-panel px-5 py-2.5 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
+                className="rounded-lg glass-panel px-5 py-2.5 text-sm font-semibold text-flex-text transition hover:border-flex-accent"
               >
                 Créer un autre film
               </Link>
