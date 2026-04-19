@@ -1,0 +1,103 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily 04:17 UTC — picks up newly disclosed CVEs even on inactive branches.
+    - cron: "17 4 * * *"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  # 1) Dependency vulnerabilities (npm audit) — fails on HIGH+ severity.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --ignore-scripts
+      - name: npm audit (high+ blocking)
+        run: npm audit --audit-level=high
+
+  # 2) Secret scan (gitleaks) — catches hard-coded credentials in the
+  # repo and in PR diffs. Mirrors the husky pre-commit guard but runs on
+  # the server so a developer who skipped hooks is still caught.
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 3) CodeQL static analysis — JavaScript/TypeScript SAST for the OWASP
+  # Top 10 / common Node anti-patterns.
+  codeql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+
+  # 4) Type check + tests — fast feedback even though they live in ci.yml.
+  # Duplicated here so security-only PR labels still gate on the bar.
+  build-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --ignore-scripts
+      - run: npx prisma generate
+      - run: npm run typecheck
+      - run: npm test
+
+  # 5) Preflight against the actual prod env (only on push to main, with
+  # the prod env vars exposed via repository environment "production").
+  preflight-prod:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --ignore-scripts
+      - run: npx prisma generate
+      - name: Run preflight against prod env
+        run: npm run preflight
+        env:
+          NODE_ENV: production
+          # Inject every prod secret from the GitHub environment here.
+          # Keep this list in sync with DEPLOY.md §6.
+          AIFLEX_TOKEN_SECRET: ${{ secrets.AIFLEX_TOKEN_SECRET }}
+          AIFLEX_LOCAL_STORAGE_SECRET: ${{ secrets.AIFLEX_LOCAL_STORAGE_SECRET }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TRUSTED_PROXY_SECRET: ${{ secrets.TRUSTED_PROXY_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_PROVIDER: prisma
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          APP_URL: ${{ secrets.APP_URL }}
