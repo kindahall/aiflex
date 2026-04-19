@@ -12,8 +12,17 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   const settings = await getSettings();
-  return NextResponse.json({
-    content: { ...DEFAULT_SITE_CONTENT, ...settings.siteContent },
-    featuredProjectId: settings.featuredProjectId || null,
-  });
+  return NextResponse.json(
+    {
+      content: { ...DEFAULT_SITE_CONTENT, ...settings.siteContent },
+      featuredProjectId: settings.featuredProjectId || null,
+    },
+    {
+      headers: {
+        // Cache for 60s at the edge (CDN) and 30s in the browser. Avoids
+        // a per-pageload DB hit and dampens any reconnaissance attempt.
+        "Cache-Control": "public, max-age=30, s-maxage=60, stale-while-revalidate=120",
+      },
+    }
+  );
 }

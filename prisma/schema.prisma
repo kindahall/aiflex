@@ -30,7 +30,7 @@ model User {
 
   // Stripe/billing
   plan                 String    @default("free")
-  stripeCustomerId     String?
+  stripeCustomerId     String?   @unique
   stripeSubscriptionId String?
   planExpiresAt        DateTime?
 
@@ -94,14 +94,22 @@ model User {
 }
 
 model Session {
-  id        String   @id @default(cuid())
-  token     String   @unique
-  userId    String
-  createdAt DateTime @default(now())
-  expiresAt DateTime
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String   @id @default(cuid())
+  token       String   @unique
+  userId      String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+  // Metadata captured at session start. Lets the user see "your active
+  // sessions" with device + location context, and lets ops flag
+  // suspicious patterns (e.g. concurrent sessions on different
+  // continents → likely cookie theft).
+  ipAddress   String?
+  userAgent   String?
+  lastSeenAt  DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([token])
+  @@index([userId])
 }
 
 // ===========================================================================
@@ -772,6 +780,7 @@ model AdminAuditLog {
   targetType String
   metadata   Json?
   ipAddress  String?
+  userAgent  String?
   createdAt  DateTime @default(now())
 
   @@index([adminId])
@@ -805,6 +814,27 @@ model AccessLog {
 
   @@index([userId])
   @@index([createdAt])
+}
+
+// AI cost ledger — per-call accounting so ops can answer "how much did
+// fal.ai cost us this month?" without polling each provider's dashboard.
+// Aggregated at write time; the daily / monthly rollups live in views.
+model AiCostEntry {
+  id           String   @id @default(cuid())
+  provider     String   // "fal" | "anthropic" | "openai" | "elevenlabs" | "syncLabs" | "suno"
+  operation    String   // "text-to-video" | "moderation" | "tts" | ...
+  model        String?
+  userId       String?
+  // Cost in USD * 1_000_000 to keep an integer column. 1 = $0.000001.
+  costMicroUsd Int
+  inputTokens  Int?
+  outputTokens Int?
+  durationMs   Int?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  @@index([provider, createdAt])
+  @@index([userId, createdAt])
 }
 
 model DMCANotice {

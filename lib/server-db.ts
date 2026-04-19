@@ -1,5 +1,6 @@
 import "server-only";
 import { promises as fs } from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import type {
   Collaborator,
@@ -22,10 +23,7 @@ import type {
   WatchProgress,
 } from "./types";
 import { hashPassword } from "./password";
-import {
-  DEFAULT_PLATFORM_SETTINGS,
-  type PlatformSettings,
-} from "./platform-settings";
+import { DEFAULT_PLATFORM_SETTINGS, type PlatformSettings } from "./platform-settings";
 
 /**
  * Simple file-backed JSON database for the AIflex prototype.
@@ -56,13 +54,48 @@ interface DB {
   tips: Tip[];
 }
 
-const DATA_DIR = path.join(process.cwd(), ".data");
+// Tests set AIFLEX_DATA_DIR to a tmp dir so they never touch the
+// developer's real .data/db.json. Production uses the default.
+const DATA_DIR = process.env.AIFLEX_DATA_DIR || path.join(process.cwd(), ".data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 
 let cache: DB | null = null;
 let initPromise: Promise<void> | null = null;
+let prodGuardLogged = false;
+
+// 96 bits CSPRNG — IDs are exposed in URLs, must not be guessable.
+function secureIdSuffix(): string {
+  return randomBytes(12).toString("base64url");
+}
 
 async function ensureInit(): Promise<void> {
+  // Production hard guard: the JSON file backend is a dev convenience,
+  // not a deployment target. If we're booting in prod without the
+  // explicit `AIFLEX_ALLOW_JSON_DB_IN_PROD=1` opt-out, refuse to serve
+  // — losing a single .data/db.json on a Vercel pod = full data loss.
+  //
+  // We exempt the Next.js *build* phase: SSG/ISR pages are evaluated at
+  // build time with NODE_ENV=production but no real DB request.
+  const isBuild =
+    process.env.NEXT_PHASE === "phase-production-build" ||
+    process.env.NEXT_PHASE === "phase-export";
+  if (
+    !isBuild &&
+    process.env.NODE_ENV === "production" &&
+    process.env.DB_PROVIDER !== "prisma" &&
+    process.env.AIFLEX_ALLOW_JSON_DB_IN_PROD !== "1"
+  ) {
+    if (!prodGuardLogged) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[server-db] Refusé en production sans DB_PROVIDER=prisma. " +
+          "Lancez `npx tsx scripts/migrate-json-to-postgres.ts` puis " +
+          "définissez DB_PROVIDER=prisma. Override d'urgence: AIFLEX_ALLOW_JSON_DB_IN_PROD=1."
+      );
+      prodGuardLogged = true;
+    }
+    throw new Error("JSON DB désactivée en production — utiliser Prisma (DB_PROVIDER=prisma).");
+  }
   if (cache) return;
   if (!initPromise) initPromise = bootstrap();
   await initPromise;
@@ -116,9 +149,7 @@ async function bootstrap(): Promise<void> {
 
   // Seed an admin user if none exists.
   if (!cache.users.some((u) => u.role === "admin")) {
-    const email = (process.env.ADMIN_EMAIL || "admin@aiflex.local")
-      .toLowerCase()
-      .trim();
+    const email = (process.env.ADMIN_EMAIL || "admin@aiflex.local").toLowerCase().trim();
 
     // Security rule: no shared default password. If ADMIN_PASSWORD is missing
     // or too short, generate a random 24-char password and log it ONCE so the
@@ -150,7 +181,7 @@ async function bootstrap(): Promise<void> {
       exists.emailVerifiedAt = exists.emailVerifiedAt ?? now;
     } else {
       cache.users.push({
-        id: `u_${now}_${Math.random().toString(36).slice(2, 8)}`,
+        id: `u_${now}_${secureIdSuffix()}`,
         email,
         name: "AIflex Admin",
         role: "admin",
@@ -165,16 +196,27 @@ async function bootstrap(): Promise<void> {
     await persist();
 
     if (generated) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-          `[AIflex] Compte admin créé.\n` +
-          `  Email:     ${email}\n` +
-          `  Password:  ${password}\n` +
-          `  ⚠ Copie-le maintenant — il ne sera pas re-loggé.\n` +
-          `  ⚠ Connecte-toi à /admin et change-le via /admin/security.\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
-      );
+      // Write the bootstrap password to a root-only file instead of stderr
+      // — centralised logging sinks will NOT capture it, and the operator
+      // has to explicitly read + then remove the file.
+      const credPath = path.join(process.cwd(), ".aiflex-admin-credentials");
+      try {
+        await fs.writeFile(credPath, `email=${email}\npassword=${password}\n`, { mode: 0o600 });
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[AIflex] Admin bootstrap credentials written to ${credPath} (chmod 0600). ` +
+            `Read them once, then \`rm\` the file. They are NOT logged to stderr.`
+        );
+      } catch (err) {
+        // Last-resort fallback: still don't print the password; emit an
+        // instruction so the operator can generate one themselves.
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[AIflex] Admin bootstrap: could not write ${credPath} (${
+            (err as Error).message
+          }). Set ADMIN_PASSWORD in env and restart — the random password was NOT persisted anywhere.`
+        );
+      }
     }
   }
 }
@@ -188,17 +230,13 @@ async function persist(): Promise<void> {
 
 // --- Users ------------------------------------------------------------
 
-export async function findUserByEmail(
-  email: string
-): Promise<UserRecord | undefined> {
+export async function findUserByEmail(email: string): Promise<UserRecord | undefined> {
   await ensureInit();
   const needle = email.toLowerCase().trim();
   return cache!.users.find((u) => u.email === needle);
 }
 
-export async function findUserById(
-  id: string
-): Promise<UserRecord | undefined> {
+export async function findUserById(id: string): Promise<UserRecord | undefined> {
   await ensureInit();
   return cache!.users.find((u) => u.id === id);
 }
@@ -208,9 +246,7 @@ export async function findUserById(
  * are simply absent from the map. Avoids N+1 findUserById calls on list
  * endpoints like /api/search and /api/users/[id].
  */
-export async function findUsersByIds(
-  ids: string[]
-): Promise<Map<string, UserRecord>> {
+export async function findUsersByIds(ids: string[]): Promise<Map<string, UserRecord>> {
   await ensureInit();
   const wanted = new Set(ids);
   const out = new Map<string, UserRecord>();
@@ -225,14 +261,28 @@ export async function findUserByOAuth(
   oauthId: string
 ): Promise<UserRecord | undefined> {
   await ensureInit();
-  return cache!.users.find(
-    (u) => u.oauthProvider === provider && u.oauthId === oauthId
-  );
+  return cache!.users.find((u) => u.oauthProvider === provider && u.oauthId === oauthId);
 }
 
 export async function listUsers(): Promise<UserRecord[]> {
   await ensureInit();
   return [...cache!.users].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * Resolve several user records by case-insensitive `name` match. Avoids
+ * the DOS pattern of `listUsers()` in comment-mention handlers when the
+ * table grows beyond a few hundred entries.
+ */
+export async function findUsersByNames(names: string[]): Promise<Map<string, UserRecord>> {
+  await ensureInit();
+  const needle = new Set(names.map((n) => n.toLowerCase()));
+  const out = new Map<string, UserRecord>();
+  for (const u of cache!.users) {
+    const key = u.name.toLowerCase();
+    if (needle.has(key) && !out.has(key)) out.set(key, u);
+  }
+  return out;
 }
 
 export async function createUser(
@@ -243,7 +293,7 @@ export async function createUser(
   await ensureInit();
   const now = Date.now();
   const user: UserRecord = {
-    id: `u_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `u_${now}_${secureIdSuffix()}`,
     createdAt: now,
     suspended: false,
     role: input.role || "user",
@@ -278,24 +328,16 @@ export async function deleteUser(id: string): Promise<boolean> {
     cache!.projects.filter((p) => p.ownerId === id).map((p) => p.id)
   );
   cache!.projects = cache!.projects.filter((p) => p.ownerId !== id);
-  cache!.likes = cache!.likes.filter(
-    (l) => l.userId !== id && !droppedProjectIds.has(l.projectId)
-  );
+  cache!.likes = cache!.likes.filter((l) => l.userId !== id && !droppedProjectIds.has(l.projectId));
   cache!.watchlist = cache!.watchlist.filter(
     (w) => w.userId !== id && !droppedProjectIds.has(w.projectId)
   );
   cache!.comments = cache!.comments.filter(
     (c) => c.authorId !== id && !droppedProjectIds.has(c.projectId)
   );
-  cache!.notifications = cache!.notifications.filter(
-    (n) => n.userId !== id && n.actorId !== id
-  );
-  cache!.watchProgress = cache!.watchProgress.filter(
-    (w) => w.userId !== id
-  );
-  cache!.follows = cache!.follows.filter(
-    (f) => f.followerId !== id && f.followedId !== id
-  );
+  cache!.notifications = cache!.notifications.filter((n) => n.userId !== id && n.actorId !== id);
+  cache!.watchProgress = cache!.watchProgress.filter((w) => w.userId !== id);
+  cache!.follows = cache!.follows.filter((f) => f.followerId !== id && f.followedId !== id);
   await persist();
   return cache!.users.length < before;
 }
@@ -332,10 +374,7 @@ export async function getCurrentUsage(userId: string): Promise<{
  * Returns the new counter value so callers can decide whether to
  * short-circuit further generations.
  */
-export async function incrementVideoUsage(
-  userId: string,
-  n = 1
-): Promise<number> {
+export async function incrementVideoUsage(userId: string, n = 1): Promise<number> {
   await ensureInit();
   const u = cache!.users.find((x) => x.id === userId);
   if (!u) throw new Error("Utilisateur introuvable");
@@ -350,25 +389,41 @@ export async function incrementVideoUsage(
 
 // --- Sessions ---------------------------------------------------------
 
-export async function createSession(userId: string): Promise<Session> {
+export async function createSession(
+  userId: string,
+  metadata?: { ipAddress?: string; userAgent?: string }
+): Promise<Session> {
   await ensureInit();
   const { randomBytes } = await import("node:crypto");
   const token = randomBytes(32).toString("hex");
   const now = Date.now();
+  // 14 days — matches the cookie maxAge after the audit-driven shrink.
   const session: Session = {
     token,
     userId,
     createdAt: now,
-    expiresAt: now + 1000 * 60 * 60 * 24 * 30, // 30 days
+    expiresAt: now + 1000 * 60 * 60 * 24 * 14,
+    ipAddress: metadata?.ipAddress?.slice(0, 64),
+    userAgent: metadata?.userAgent?.slice(0, 400),
+    lastSeenAt: now,
   };
   cache!.sessions.push(session);
   await persist();
   return session;
 }
 
-export async function findSession(
-  token: string
-): Promise<Session | undefined> {
+/** Bump `lastSeenAt` on a live session — best-effort, never throws. */
+export async function touchSession(token: string): Promise<void> {
+  await ensureInit();
+  const s = cache!.sessions.find((x) => x.token === token);
+  if (!s) return;
+  s.lastSeenAt = Date.now();
+  // Don't persist on every request — that would hammer the JSON file.
+  // The in-memory bump is enough for the "active sessions" panel; the
+  // next createSession / delete will flush.
+}
+
+export async function findSession(token: string): Promise<Session | undefined> {
   await ensureInit();
   const s = cache!.sessions.find((x) => x.token === token);
   if (!s) return undefined;
@@ -399,9 +454,17 @@ export async function deleteSessionsForUserExcept(
 ): Promise<number> {
   await ensureInit();
   const before = cache!.sessions.length;
-  cache!.sessions = cache!.sessions.filter(
-    (s) => s.userId !== userId || s.token === keepToken
-  );
+  cache!.sessions = cache!.sessions.filter((s) => s.userId !== userId || s.token === keepToken);
+  const removed = before - cache!.sessions.length;
+  if (removed > 0) await persist();
+  return removed;
+}
+
+/** Revoke every session for a user — used on password reset. */
+export async function deleteAllSessionsForUser(userId: string): Promise<number> {
+  await ensureInit();
+  const before = cache!.sessions.length;
+  cache!.sessions = cache!.sessions.filter((s) => s.userId !== userId);
   const removed = before - cache!.sessions.length;
   if (removed > 0) await persist();
   return removed;
@@ -409,9 +472,7 @@ export async function deleteSessionsForUserExcept(
 
 // --- Projects ---------------------------------------------------------
 
-export async function listProjectsByOwner(
-  ownerId: string
-): Promise<Project[]> {
+export async function listProjectsByOwner(ownerId: string): Promise<Project[]> {
   await ensureInit();
   return cache!.projects
     .filter((p) => p.ownerId === ownerId)
@@ -427,15 +488,10 @@ export async function listPublicProjects(): Promise<Project[]> {
   await ensureInit();
   return cache!.projects
     .filter((p) => p.published && p.visibility === "public")
-    .sort(
-      (a, b) =>
-        (b.publishedAt ?? b.updatedAt) - (a.publishedAt ?? a.updatedAt)
-    );
+    .sort((a, b) => (b.publishedAt ?? b.updatedAt) - (a.publishedAt ?? a.updatedAt));
 }
 
-export async function getProjectById(
-  id: string
-): Promise<Project | undefined> {
+export async function getProjectById(id: string): Promise<Project | undefined> {
   await ensureInit();
   return cache!.projects.find((p) => p.id === id);
 }
@@ -446,7 +502,7 @@ export async function createProject(
   await ensureInit();
   const now = Date.now();
   const p: Project = {
-    id: `p_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `p_${now}_${secureIdSuffix()}`,
     createdAt: now,
     updatedAt: now,
     views: 0,
@@ -479,12 +535,8 @@ export async function deleteProjectById(id: string): Promise<boolean> {
   cache!.likes = cache!.likes.filter((l) => l.projectId !== id);
   cache!.watchlist = cache!.watchlist.filter((w) => w.projectId !== id);
   cache!.comments = cache!.comments.filter((c) => c.projectId !== id);
-  cache!.notifications = cache!.notifications.filter(
-    (n) => n.projectId !== id
-  );
-  cache!.watchProgress = cache!.watchProgress.filter(
-    (w) => w.projectId !== id
-  );
+  cache!.notifications = cache!.notifications.filter((n) => n.projectId !== id);
+  cache!.watchProgress = cache!.watchProgress.filter((w) => w.projectId !== id);
   await persist();
   return cache!.projects.length < before;
 }
@@ -492,14 +544,9 @@ export async function deleteProjectById(id: string): Promise<boolean> {
 // --- Likes ------------------------------------------------------------
 
 /** Returns true if the user has already liked the project. */
-export async function hasLiked(
-  userId: string,
-  projectId: string
-): Promise<boolean> {
+export async function hasLiked(userId: string, projectId: string): Promise<boolean> {
   await ensureInit();
-  return cache!.likes.some(
-    (l) => l.userId === userId && l.projectId === projectId
-  );
+  return cache!.likes.some((l) => l.userId === userId && l.projectId === projectId);
 }
 
 /**
@@ -514,9 +561,7 @@ export async function likeProject(
   await ensureInit();
   const project = cache!.projects.find((p) => p.id === projectId);
   if (!project) throw new Error("Projet introuvable");
-  const exists = cache!.likes.some(
-    (l) => l.userId === userId && l.projectId === projectId
-  );
+  const exists = cache!.likes.some((l) => l.userId === userId && l.projectId === projectId);
   if (!exists) {
     cache!.likes.push({ userId, projectId, createdAt: Date.now() });
     project.likes = (project.likes || 0) + 1;
@@ -533,9 +578,7 @@ export async function unlikeProject(
   const project = cache!.projects.find((p) => p.id === projectId);
   if (!project) throw new Error("Projet introuvable");
   const before = cache!.likes.length;
-  cache!.likes = cache!.likes.filter(
-    (l) => !(l.userId === userId && l.projectId === projectId)
-  );
+  cache!.likes = cache!.likes.filter((l) => !(l.userId === userId && l.projectId === projectId));
   if (cache!.likes.length < before) {
     project.likes = Math.max(0, (project.likes || 0) - 1);
     await persist();
@@ -545,36 +588,23 @@ export async function unlikeProject(
 
 // --- Watchlist --------------------------------------------------------
 
-export async function inWatchlist(
-  userId: string,
-  projectId: string
-): Promise<boolean> {
+export async function inWatchlist(userId: string, projectId: string): Promise<boolean> {
   await ensureInit();
-  return cache!.watchlist.some(
-    (w) => w.userId === userId && w.projectId === projectId
-  );
+  return cache!.watchlist.some((w) => w.userId === userId && w.projectId === projectId);
 }
 
-export async function addToWatchlist(
-  userId: string,
-  projectId: string
-): Promise<void> {
+export async function addToWatchlist(userId: string, projectId: string): Promise<void> {
   await ensureInit();
   const project = cache!.projects.find((p) => p.id === projectId);
   if (!project) throw new Error("Projet introuvable");
-  const exists = cache!.watchlist.some(
-    (w) => w.userId === userId && w.projectId === projectId
-  );
+  const exists = cache!.watchlist.some((w) => w.userId === userId && w.projectId === projectId);
   if (!exists) {
     cache!.watchlist.push({ userId, projectId, addedAt: Date.now() });
     await persist();
   }
 }
 
-export async function removeFromWatchlist(
-  userId: string,
-  projectId: string
-): Promise<void> {
+export async function removeFromWatchlist(userId: string, projectId: string): Promise<void> {
   await ensureInit();
   const before = cache!.watchlist.length;
   cache!.watchlist = cache!.watchlist.filter(
@@ -604,9 +634,7 @@ export async function listWatchlist(userId: string): Promise<Project[]> {
 
 // --- Comments ---------------------------------------------------------
 
-export async function listCommentsForProject(
-  projectId: string
-): Promise<Comment[]> {
+export async function listCommentsForProject(projectId: string): Promise<Comment[]> {
   await ensureInit();
   return cache!.comments
     .filter((c) => c.projectId === projectId && !c.parentId)
@@ -621,9 +649,7 @@ export async function listReplies(commentId: string): Promise<Comment[]> {
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export async function countCommentsForProject(
-  projectId: string
-): Promise<number> {
+export async function countCommentsForProject(projectId: string): Promise<number> {
   await ensureInit();
   return cache!.comments.filter((c) => c.projectId === projectId).length;
 }
@@ -632,9 +658,7 @@ export async function countCommentsForProject(
  * Batch comment count across multiple projects. One pass over the comments
  * array vs one call-per-project — avoids N+1 on profile pages.
  */
-export async function countCommentsForProjects(
-  projectIds: string[]
-): Promise<Map<string, number>> {
+export async function countCommentsForProjects(projectIds: string[]): Promise<Map<string, number>> {
   await ensureInit();
   const out = new Map<string, number>();
   for (const id of projectIds) out.set(id, 0);
@@ -670,7 +694,7 @@ export async function addComment(input: {
 
   const now = Date.now();
   const comment: Comment = {
-    id: `c_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `c_${now}_${secureIdSuffix()}`,
     projectId: input.projectId,
     authorId: input.authorId,
     authorName: input.authorName,
@@ -692,9 +716,7 @@ export async function addComment(input: {
   return comment;
 }
 
-export async function getCommentById(
-  id: string
-): Promise<Comment | undefined> {
+export async function getCommentById(id: string): Promise<Comment | undefined> {
   await ensureInit();
   return cache!.comments.find((c) => c.id === id);
 }
@@ -713,12 +735,8 @@ export async function deleteCommentById(id: string): Promise<boolean> {
   }
 
   // Cascade: also delete all replies to this comment.
-  const replyIds = new Set(
-    cache!.comments.filter((c) => c.parentId === id).map((c) => c.id)
-  );
-  cache!.comments = cache!.comments.filter(
-    (c) => c.id !== id && !replyIds.has(c.id)
-  );
+  const replyIds = new Set(cache!.comments.filter((c) => c.parentId === id).map((c) => c.id));
+  cache!.comments = cache!.comments.filter((c) => c.id !== id && !replyIds.has(c.id));
 
   await persist();
   return true;
@@ -756,7 +774,7 @@ export async function createNotification(input: {
 
   const now = Date.now();
   const notif: Notification = {
-    id: `n_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `n_${now}_${secureIdSuffix()}`,
     userId: input.userId,
     kind: input.kind,
     message: input.message,
@@ -772,10 +790,7 @@ export async function createNotification(input: {
   return notif;
 }
 
-export async function listNotifications(
-  userId: string,
-  limit = 50
-): Promise<Notification[]> {
+export async function listNotifications(userId: string, limit = 50): Promise<Notification[]> {
   await ensureInit();
   return cache!.notifications
     .filter((n) => n.userId === userId)
@@ -783,23 +798,14 @@ export async function listNotifications(
     .slice(0, limit);
 }
 
-export async function countUnreadNotifications(
-  userId: string
-): Promise<number> {
+export async function countUnreadNotifications(userId: string): Promise<number> {
   await ensureInit();
-  return cache!.notifications.filter(
-    (n) => n.userId === userId && !n.read
-  ).length;
+  return cache!.notifications.filter((n) => n.userId === userId && !n.read).length;
 }
 
-export async function markNotificationRead(
-  userId: string,
-  notifId: string
-): Promise<void> {
+export async function markNotificationRead(userId: string, notifId: string): Promise<void> {
   await ensureInit();
-  const n = cache!.notifications.find(
-    (x) => x.id === notifId && x.userId === userId
-  );
+  const n = cache!.notifications.find((x) => x.id === notifId && x.userId === userId);
   if (n && !n.read) {
     n.read = true;
     await persist();
@@ -813,9 +819,7 @@ export async function getWatchProgress(
   projectId: string
 ): Promise<WatchProgress | undefined> {
   await ensureInit();
-  return cache!.watchProgress.find(
-    (w) => w.userId === userId && w.projectId === projectId
-  );
+  return cache!.watchProgress.find((w) => w.userId === userId && w.projectId === projectId);
 }
 
 export async function upsertWatchProgress(input: {
@@ -877,7 +881,7 @@ export async function createReport(input: {
   await ensureInit();
   const now = Date.now();
   const report: Report = {
-    id: `rep_${now}_${Math.random().toString(36).slice(2, 8)}`,
+    id: `rep_${now}_${secureIdSuffix()}`,
     ...input,
     status: "pending",
     createdAt: now,
@@ -887,12 +891,24 @@ export async function createReport(input: {
   return report;
 }
 
-export async function listReports(
-  status?: Report["status"]
-): Promise<Report[]> {
+export async function listReports(status?: Report["status"]): Promise<Report[]> {
   await ensureInit();
   return cache!.reports
     .filter((r) => !status || r.status === status)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/** Count reports a given reporter has filed since `sinceMs`. */
+export async function countReportsByReporter(reporterId: string, sinceMs: number): Promise<number> {
+  await ensureInit();
+  return cache!.reports.filter((r) => r.reporterId === reporterId && r.createdAt >= sinceMs).length;
+}
+
+/** Return all reports filed by a reporter — used by the abuse-detection path. */
+export async function listReportsByReporter(reporterId: string): Promise<Report[]> {
+  await ensureInit();
+  return cache!.reports
+    .filter((r) => r.reporterId === reporterId)
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
@@ -911,9 +927,7 @@ export async function updateReportStatus(
   return r;
 }
 
-export async function markAllNotificationsRead(
-  userId: string
-): Promise<void> {
+export async function markAllNotificationsRead(userId: string): Promise<void> {
   await ensureInit();
   let changed = false;
   for (const n of cache!.notifications) {
@@ -927,10 +941,7 @@ export async function markAllNotificationsRead(
 
 // --- Follows --------------------------------------------------------------
 
-export async function followUser(
-  followerId: string,
-  followedId: string
-): Promise<boolean> {
+export async function followUser(followerId: string, followedId: string): Promise<boolean> {
   await ensureInit();
   if (followerId === followedId) return false;
   const exists = cache!.follows.some(
@@ -942,10 +953,7 @@ export async function followUser(
   return true;
 }
 
-export async function unfollowUser(
-  followerId: string,
-  followedId: string
-): Promise<boolean> {
+export async function unfollowUser(followerId: string, followedId: string): Promise<boolean> {
   await ensureInit();
   const before = cache!.follows.length;
   cache!.follows = cache!.follows.filter(
@@ -958,14 +966,9 @@ export async function unfollowUser(
   return false;
 }
 
-export async function isFollowing(
-  followerId: string,
-  followedId: string
-): Promise<boolean> {
+export async function isFollowing(followerId: string, followedId: string): Promise<boolean> {
   await ensureInit();
-  return cache!.follows.some(
-    (f) => f.followerId === followerId && f.followedId === followedId
-  );
+  return cache!.follows.some((f) => f.followerId === followerId && f.followedId === followedId);
 }
 
 export async function getFollowerCount(userId: string): Promise<number> {
@@ -980,29 +983,20 @@ export async function getFollowingCount(userId: string): Promise<number> {
 
 export async function listFollowers(userId: string): Promise<UserRecord[]> {
   await ensureInit();
-  const ids = cache!.follows
-    .filter((f) => f.followedId === userId)
-    .map((f) => f.followerId);
+  const ids = cache!.follows.filter((f) => f.followedId === userId).map((f) => f.followerId);
   return cache!.users.filter((u) => ids.includes(u.id));
 }
 
 export async function listFollowing(userId: string): Promise<UserRecord[]> {
   await ensureInit();
-  const ids = cache!.follows
-    .filter((f) => f.followerId === userId)
-    .map((f) => f.followedId);
+  const ids = cache!.follows.filter((f) => f.followerId === userId).map((f) => f.followedId);
   return cache!.users.filter((u) => ids.includes(u.id));
 }
 
 /** List projects visible to a follower (public + followers-only). */
-export async function listVisibleProjects(
-  ownerId: string,
-  viewerId?: string
-): Promise<Project[]> {
+export async function listVisibleProjects(ownerId: string, viewerId?: string): Promise<Project[]> {
   await ensureInit();
-  const isFollower = viewerId
-    ? await isFollowing(viewerId, ownerId)
-    : false;
+  const isFollower = viewerId ? await isFollowing(viewerId, ownerId) : false;
   const isOwner = viewerId === ownerId;
 
   return cache!.projects
@@ -1027,17 +1021,13 @@ export async function stats() {
     suspendedUsers: users.filter((u) => u.suspended).length,
     admins: users.filter((u) => u.role === "admin").length,
     totalProjects: projects.length,
-    publishedProjects: projects.filter(
-      (p) => p.published && p.visibility === "public"
-    ).length,
+    publishedProjects: projects.filter((p) => p.published && p.visibility === "public").length,
     totalScenes: projects.reduce((n, p) => n + (p.scenes?.length || 0), 0),
     totalVideos: projects.reduce(
       (n, p) => n + (p.scenes?.filter((s) => s.videoUrl).length || 0),
       0
     ),
-    last7DaysSignups: users.filter(
-      (u) => u.createdAt > Date.now() - 7 * 24 * 3600 * 1000
-    ).length,
+    last7DaysSignups: users.filter((u) => u.createdAt > Date.now() - 7 * 24 * 3600 * 1000).length,
   };
 }
 
@@ -1055,9 +1045,7 @@ export async function getSettings(): Promise<PlatformSettings> {
   return { ...cache!.settings };
 }
 
-export async function updateSettings(
-  patch: Partial<PlatformSettings>
-): Promise<PlatformSettings> {
+export async function updateSettings(patch: Partial<PlatformSettings>): Promise<PlatformSettings> {
   await ensureInit();
   cache!.settings = { ...cache!.settings, ...patch };
   await persist();
@@ -1066,22 +1054,18 @@ export async function updateSettings(
 
 // --- Push Subscriptions ------------------------------------------------
 
-export async function savePushSubscription(
-  sub: PushSubscription
-): Promise<void> {
+export async function savePushSubscription(sub: PushSubscription): Promise<void> {
   await ensureInit();
-  // Upsert: remove any existing subscription with the same endpoint for this user.
-  cache!.pushSubscriptions = cache!.pushSubscriptions.filter(
-    (s) => !(s.userId === sub.userId && s.endpoint === sub.endpoint)
-  );
+  // A given push endpoint is unique to ONE browser/device — never allow
+  // two users to share it. Dropping the row across users prevents a
+  // logged-in attacker from re-registering the victim's endpoint under
+  // their account and hijacking their push notifications.
+  cache!.pushSubscriptions = cache!.pushSubscriptions.filter((s) => s.endpoint !== sub.endpoint);
   cache!.pushSubscriptions.push(sub);
   await persist();
 }
 
-export async function removePushSubscription(
-  userId: string,
-  endpoint: string
-): Promise<void> {
+export async function removePushSubscription(userId: string, endpoint: string): Promise<void> {
   await ensureInit();
   cache!.pushSubscriptions = cache!.pushSubscriptions.filter(
     (s) => !(s.userId === userId && s.endpoint === endpoint)
@@ -1089,9 +1073,7 @@ export async function removePushSubscription(
   await persist();
 }
 
-export async function getPushSubscriptionsForUser(
-  userId: string
-): Promise<PushSubscription[]> {
+export async function getPushSubscriptionsForUser(userId: string): Promise<PushSubscription[]> {
   await ensureInit();
   return cache!.pushSubscriptions.filter((s) => s.userId === userId);
 }
@@ -1154,17 +1136,13 @@ export async function getConversationById(id: string): Promise<Conversation | nu
   return cache!.conversations.find((c) => c.id === id) ?? null;
 }
 
-export async function findOrCreateConversation(
-  participantIds: string[]
-): Promise<Conversation> {
+export async function findOrCreateConversation(participantIds: string[]): Promise<Conversation> {
   await ensureInit();
   const sorted = [...participantIds].sort();
-  const existing = cache!.conversations.find(
-    (c) => {
-      const cSorted = [...c.participantIds].sort();
-      return cSorted.length === sorted.length && cSorted.every((id, i) => id === sorted[i]);
-    }
-  );
+  const existing = cache!.conversations.find((c) => {
+    const cSorted = [...c.participantIds].sort();
+    return cSorted.length === sorted.length && cSorted.every((id, i) => id === sorted[i]);
+  });
   if (existing) return existing;
 
   const conv: Conversation = {
@@ -1178,10 +1156,7 @@ export async function findOrCreateConversation(
   return conv;
 }
 
-export async function listMessages(
-  conversationId: string,
-  limit = 50
-): Promise<DirectMessage[]> {
+export async function listMessages(conversationId: string, limit = 50): Promise<DirectMessage[]> {
   await ensureInit();
   return cache!.messages
     .filter((m) => m.conversationId === conversationId)
@@ -1211,10 +1186,7 @@ export async function sendMessage(input: {
   return msg;
 }
 
-export async function markMessagesRead(
-  conversationId: string,
-  userId: string
-): Promise<void> {
+export async function markMessagesRead(conversationId: string, userId: string): Promise<void> {
   await ensureInit();
   let changed = false;
   for (const msg of cache!.messages) {
@@ -1264,10 +1236,7 @@ export async function addCollaborator(input: {
   return collab;
 }
 
-export async function removeCollaborator(
-  projectId: string,
-  userId: string
-): Promise<boolean> {
+export async function removeCollaborator(projectId: string, userId: string): Promise<boolean> {
   await ensureInit();
   const before = cache!.collaborators.length;
   cache!.collaborators = cache!.collaborators.filter(
@@ -1285,15 +1254,11 @@ export async function getCollaboratorRole(
   userId: string
 ): Promise<CollaboratorRole | null> {
   await ensureInit();
-  const c = cache!.collaborators.find(
-    (c) => c.projectId === projectId && c.userId === userId
-  );
+  const c = cache!.collaborators.find((c) => c.projectId === projectId && c.userId === userId);
   return c?.role ?? null;
 }
 
-export async function listUserCollaborations(
-  userId: string
-): Promise<Project[]> {
+export async function listUserCollaborations(userId: string): Promise<Project[]> {
   await ensureInit();
   const projectIds = cache!.collaborators
     .filter((c) => c.userId === userId)
@@ -1317,9 +1282,7 @@ export async function createTip(input: Omit<Tip, "id" | "createdAt">): Promise<T
 
 export async function listTipsReceived(userId: string): Promise<Tip[]> {
   await ensureInit();
-  return cache!.tips
-    .filter((t) => t.toUserId === userId)
-    .sort((a, b) => b.createdAt - a.createdAt);
+  return cache!.tips.filter((t) => t.toUserId === userId).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export async function getTipStats(userId: string): Promise<{

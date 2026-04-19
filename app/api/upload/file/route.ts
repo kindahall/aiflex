@@ -6,13 +6,12 @@ import crypto from "node:crypto";
 import { AuthError, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { moderateAndLog } from "@/lib/moderation";
-import {
-  priceForPrivateUpload,
-  priceForPublicUpload,
-} from "@/lib/types/film";
+import { priceForPrivateUpload, priceForPublicUpload } from "@/lib/types/film";
 import { probeDurationSeconds } from "@/lib/video-probe";
 import { getStorage, storagePaths } from "@/lib/storage";
 import { createOneShotCheckout } from "@/lib/stripe-oneshot";
+import { scanBufferForMalware } from "@/lib/av-scan";
+import { isKilled } from "@/lib/kill-switch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,7 +50,17 @@ const ALLOWED_CONTENT_TYPES = new Set([
 export async function POST(req: Request) {
   let tmpPath: string | null = null;
   try {
+    if (isKilled("uploads")) {
+      return NextResponse.json({ error: "Uploads temporairement désactivés." }, { status: 503 });
+    }
     const user = await requireUser();
+
+    // Reject before parsing — formData() would otherwise allocate the
+    // multipart body in memory before we have a chance to bail.
+    const declaredLen = Number(req.headers.get("content-length") || 0);
+    if (declaredLen && declaredLen > MAX_BYTES_PUBLIC + 16 * 1024) {
+      return NextResponse.json({ error: "Fichier trop volumineux (max 5 GB)" }, { status: 413 });
+    }
 
     const form = await req.formData();
     const file = form.get("file");
@@ -67,17 +76,49 @@ export async function POST(req: Request) {
       );
     }
     if (file.size > MAX_BYTES_PUBLIC) {
-      return NextResponse.json(
-        { error: "Fichier trop volumineux (max 5 GB)" },
-        { status: 413 }
-      );
+      return NextResponse.json({ error: "Fichier trop volumineux (max 5 GB)" }, { status: 413 });
+    }
+
+    // Per-user monthly upload volume quota. Prevents one abusive account
+    // from dumping terabytes into our storage bill. Admins exempt;
+    // override via env (MAX_USER_UPLOAD_BYTES_PER_MONTH).
+    const monthlyBytesCap = Number(
+      process.env.MAX_USER_UPLOAD_BYTES_PER_MONTH || 50 * 1024 * 1024 * 1024 // 50 GB
+    );
+    if (user.role !== "admin" && Number.isFinite(monthlyBytesCap) && monthlyBytesCap > 0) {
+      const startOfMonth = new Date();
+      startOfMonth.setUTCDate(1);
+      startOfMonth.setUTCHours(0, 0, 0, 0);
+      const agg = await prisma.project.aggregate({
+        _sum: { fileSize: true },
+        where: {
+          ownerId: user.id,
+          uploadType: "user_upload",
+          createdAt: { gte: startOfMonth },
+        },
+      });
+      const usedBytes = Number(agg._sum.fileSize ?? 0);
+      if (usedBytes + file.size > monthlyBytesCap) {
+        return NextResponse.json(
+          {
+            error: `Quota d'upload mensuel dépassé (${Math.round(
+              monthlyBytesCap / 1024 / 1024 / 1024
+            )} Go). Réessaie le mois prochain ou demande une extension.`,
+            usedBytes,
+            quotaBytes: monthlyBytesCap,
+          },
+          { status: 429 }
+        );
+      }
     }
 
     const title = ((form.get("title") as string) || "").trim();
     const synopsis = ((form.get("synopsis") as string) || "").trim();
     const genre = ((form.get("genre") as string) || "drama").trim();
-    const visibility = ((form.get("visibility") as string) ||
-      "private") as "private" | "private_circle" | "public";
+    const visibility = ((form.get("visibility") as string) || "private") as
+      | "private"
+      | "private_circle"
+      | "public";
     const invitedRaw = (form.get("invitedEmails") as string) || "[]";
     let invitedEmails: string[] = [];
     try {
@@ -109,15 +150,53 @@ export async function POST(req: Request) {
       );
     }
 
-    // 4. Persist to a temp file so ffprobe can read it
+    // 4. Stream the upload to disk in 1 MB chunks instead of loading
+    //    the entire file into memory. A 5 GB user_upload would otherwise
+    //    burn 5 GB of RSS per concurrent upload — trivial DOS / OOM on
+    //    any reasonable server.
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "aiflex-upload-"));
     tmpPath = path.join(tmpDir, rawName.replace(/[^A-Za-z0-9._-]/g, "_"));
-    const buf = Buffer.from(await file.arrayBuffer());
-    await fs.writeFile(tmpPath, buf);
+    const { createWriteStream } = await import("node:fs");
+    const writer = createWriteStream(tmpPath);
+    const reader = (file as Blob).stream().getReader();
+    let writtenBytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        writtenBytes += value.byteLength;
+        if (writtenBytes > MAX_BYTES_PUBLIC) {
+          writer.destroy();
+          throw new Error("payload-too-large");
+        }
+        if (!writer.write(Buffer.from(value))) {
+          await new Promise<void>((res) => writer.once("drain", res));
+        }
+      }
+    } catch (err) {
+      writer.destroy();
+      reader.releaseLock();
+      if ((err as Error).message === "payload-too-large") {
+        return NextResponse.json({ error: "Fichier trop volumineux (max 5 GB)" }, { status: 413 });
+      }
+      throw err;
+    }
+    await new Promise<void>((res, rej) => {
+      writer.end((err: Error | null | undefined) => (err ? rej(err) : res()));
+    });
+
+    // Optional AV scan. Re-reads the file from disk in chunks; the
+    // scanner adapter caps at 100 MB so for huge videos it's a soft
+    // skip (admin review still applies).
+    const buf = await fs.readFile(tmpPath);
+    const av = await scanBufferForMalware(buf, rawName);
+    if (!av.clean) {
+      return NextResponse.json({ error: `Fichier refusé : ${av.reason}` }, { status: 400 });
+    }
 
     const durationSec = await probeDurationSeconds(tmpPath);
-    const durationMinutes =
-      durationSec != null ? Math.max(1, Math.ceil(durationSec / 60)) : null;
+    const durationMinutes = durationSec != null ? Math.max(1, Math.ceil(durationSec / 60)) : null;
 
     // 5. Price
     let priceCents: number | null;
@@ -137,10 +216,7 @@ export async function POST(req: Request) {
     } else {
       priceCents = priceForPrivateUpload(file.size);
       if (priceCents == null) {
-        return NextResponse.json(
-          { error: "Fichier plus grand que 5 GB" },
-          { status: 413 }
-        );
+        return NextResponse.json({ error: "Fichier plus grand que 5 GB" }, { status: 413 });
       }
     }
 
@@ -152,9 +228,7 @@ export async function POST(req: Request) {
 
     // Private-circle: generate an invite token for share links
     const inviteToken =
-      visibility === "private_circle"
-        ? crypto.randomBytes(24).toString("base64url")
-        : null;
+      visibility === "private_circle" ? crypto.randomBytes(24).toString("base64url") : null;
 
     // 7. Draft project — awaiting_payment is a stopgap status, flipped by
     //    the Stripe webhook to pending_review (public) or ready (private)
@@ -187,9 +261,7 @@ export async function POST(req: Request) {
     //    via a one-shot session so every billable action goes through the
     //    same rail. (Alternative: wrap in subscription credits.)
     const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      process.env.APP_URL ||
-      "http://localhost:3000";
+      process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "http://localhost:3000";
 
     const checkoutUrl = await createOneShotCheckout({
       kind: "upload",

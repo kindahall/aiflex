@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { fal } from "@fal-ai/client";
 import { AuthError, requireUser } from "@/lib/auth";
 import { checkPlanAccess, planGateError } from "@/lib/plan-gate";
+import { assertSafeOutboundUrl } from "@/lib/safe-fetch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,19 +22,21 @@ export async function POST(req: Request) {
     // Plan check — Pro+ only
     const access = await checkPlanAccess(user.id, "face-swap");
     if (!access.allowed) {
-      return NextResponse.json(
-        { error: planGateError(access.requiredPlan) },
-        { status: 403 }
-      );
+      return NextResponse.json({ error: planGateError(access.requiredPlan) }, { status: 403 });
     }
 
     const body = (await req.json()) as Body;
 
     if (!body.sourceUrl || !body.faceUrl) {
-      return NextResponse.json(
-        { error: "sourceUrl et faceUrl requis" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "sourceUrl et faceUrl requis" }, { status: 400 });
+    }
+
+    try {
+      await assertSafeOutboundUrl(body.sourceUrl);
+      await assertSafeOutboundUrl(body.faceUrl);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "URL refusée";
+      return NextResponse.json({ error: msg }, { status: 400 });
     }
 
     const key = process.env.FAL_KEY || "";
@@ -55,8 +58,7 @@ export async function POST(req: Request) {
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data: any = (result as any)?.data ?? result;
-    const outputUrl: string | undefined =
-      data?.image?.url || data?.output?.url || data?.url;
+    const outputUrl: string | undefined = data?.image?.url || data?.output?.url || data?.url;
 
     if (!outputUrl) {
       return NextResponse.json(

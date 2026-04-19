@@ -103,7 +103,9 @@ export async function GET(req: Request) {
     try {
       // Avoid a hard ioredis import — the dep isn't installed by default.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod: any = await (Function("return import('ioredis')") as () => Promise<unknown>)().catch(() => null);
+      const mod: any = await (
+        Function("return import('ioredis')") as () => Promise<unknown>
+      )().catch(() => null);
       if (!mod) {
         checks.redis = { ok: false, detail: "ioredis package not installed" };
       } else {
@@ -126,13 +128,40 @@ export async function GET(req: Request) {
     checks.redis = { ok: true, detail: "REDIS_URL not set (in-memory queue)" };
   }
 
+  // --- Upstash Redis (rate-limit backend) ping — separate from REDIS_URL
+  // because they're often two different services (BullMQ on managed
+  // Redis, rate-limit on Upstash REST). Multi-instance deployments need
+  // BOTH for correctness.
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2_000);
+      const r = await fetch(`${process.env.UPSTASH_REDIS_REST_URL.replace(/\/$/, "")}/ping`, {
+        headers: { Authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}` },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      checks.upstash = { ok: r.ok, detail: `HTTP ${r.status}` };
+    } catch (err) {
+      checks.upstash = {
+        ok: false,
+        detail: err instanceof Error ? err.message : "unreachable",
+      };
+    }
+  } else {
+    checks.upstash = {
+      ok: true,
+      detail: "Upstash not configured (single-instance rate-limit OK)",
+    };
+  }
+
   // --- Disk space — fs.statfs is Node 18.15+ but best-effort
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fsAny = fs as any;
     const stats = fsAny.statfs ? await fsAny.statfs("/") : null;
     if (stats) {
-      const freeGb = (Number(stats.bavail) * Number(stats.bsize)) / (1024 ** 3);
+      const freeGb = (Number(stats.bavail) * Number(stats.bsize)) / 1024 ** 3;
       checks.disk = {
         ok: freeGb > 1, // alert if < 1 GB free
         detail: `${freeGb.toFixed(1)} GB free`,
@@ -150,11 +179,26 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const strict = url.searchParams.get("strict") === "1";
 
-  const coreOk =
-    checks.db.ok && checks.settings.ok && checks.prisma.ok && checks.storage.ok;
+  const coreOk = checks.db.ok && checks.settings.ok && checks.prisma.ok && checks.storage.ok;
   const hasNarrative = hasOpenAI || hasAnthropic;
-  const fullyOk = coreOk && hasNarrative && hasFal && checks.redis.ok && checks.disk.ok;
+  const fullyOk =
+    coreOk && hasNarrative && hasFal && checks.redis.ok && checks.upstash.ok && checks.disk.ok;
   const ok = strict ? fullyOk : coreOk;
+
+  // In production we return a minimal payload to avoid leaking
+  // environment / version / integration inventory to casual visitors.
+  // Operators who need the full report can pass ?verbose=1 + a bearer
+  // token matching HEALTH_DETAIL_TOKEN.
+  const isProd = process.env.NODE_ENV === "production";
+  const verbose = url.searchParams.get("verbose") === "1";
+  const tokenHeader = req.headers.get("authorization") || "";
+  const expected = process.env.HEALTH_DETAIL_TOKEN;
+  const tokenOk = !!expected && tokenHeader === `Bearer ${expected}`;
+  const showDetails = !isProd || (verbose && tokenOk);
+
+  if (!showDetails) {
+    return NextResponse.json({ ok }, { status: ok ? 200 : 503 });
+  }
 
   return NextResponse.json(
     {

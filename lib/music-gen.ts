@@ -38,9 +38,7 @@ export interface MusicGenParams {
   label?: string;
 }
 
-export async function generateMusic(
-  params: MusicGenParams
-): Promise<MusicGenResult> {
+export async function generateMusic(params: MusicGenParams): Promise<MusicGenResult> {
   const apiKey = process.env.SUNO_API_KEY;
   if (!apiKey) {
     return { skipped: true, reason: "SUNO_API_KEY not configured" };
@@ -48,24 +46,30 @@ export async function generateMusic(
   const baseUrl = process.env.SUNO_API_URL || API_BASE;
 
   // 1. Submit
-  const submitRes = await fetch(`${baseUrl}/generate`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      prompt: params.prompt,
-      duration_sec: Math.max(30, Math.min(180, params.durationSec ?? 60)),
-      make_instrumental: !params.vocalsLanguage,
-      ...(params.vocalsLanguage ? { language: params.vocalsLanguage } : {}),
-    }),
-  });
+  const { timedFetch } = await import("./safe-outbound");
+  const { withOutboundLimit } = await import("./outbound-limit");
+  const { withCircuitBreaker } = await import("./circuit-breaker");
+  const submitRes = await withCircuitBreaker("suno", () =>
+    withOutboundLimit("suno", () =>
+      timedFetch(`${baseUrl}/generate`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: params.prompt,
+          duration_sec: Math.max(30, Math.min(180, params.durationSec ?? 60)),
+          make_instrumental: !params.vocalsLanguage,
+          ...(params.vocalsLanguage ? { language: params.vocalsLanguage } : {}),
+        }),
+        timeoutMs: 30_000,
+      })
+    )
+  );
   if (!submitRes.ok) {
     const text = await submitRes.text();
-    throw new Error(
-      `Suno submit failed (${submitRes.status}): ${text.slice(0, 400)}`
-    );
+    throw new Error(`Suno submit failed (${submitRes.status}): ${text.slice(0, 400)}`);
   }
   const submitData = (await submitRes.json()) as { id?: string; url?: string };
 
@@ -99,9 +103,14 @@ async function pollForAudio(
 ): Promise<string | undefined> {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
-    const r = await fetch(`${baseUrl}/jobs/${jobId}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    const { timedFetch } = await import("./safe-outbound");
+    const { withOutboundLimit } = await import("./outbound-limit");
+    const r = await withOutboundLimit("suno", () =>
+      timedFetch(`${baseUrl}/jobs/${jobId}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        timeoutMs: 10_000,
+      })
+    );
     if (!r.ok) {
       await new Promise((res) => setTimeout(res, 5_000));
       continue;

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
 import { findUserById, updateUser } from "@/lib/server-db";
-import { verifyTOTP } from "@/lib/totp";
+import { verifyTOTP, verifyBackupCode } from "@/lib/totp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,22 +24,21 @@ export async function POST(req: Request) {
 
     const record = await findUserById(user.id);
     if (!record?.totpSecret) {
-      return NextResponse.json(
-        { error: "2FA non configuré" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "2FA non configuré" }, { status: 400 });
     }
 
     const code = body.code.trim().replace(/\s/g, "");
     const valid = await verifyTOTP(record.totpSecret, code);
 
-    // Check backup codes if TOTP didn't match
+    // Check backup codes if TOTP didn't match (hashed or legacy plaintext)
     let usedBackup = false;
-    if (!valid && record.totpBackupCodes?.includes(code)) {
-      usedBackup = true;
-      // Remove used backup code
-      const remaining = record.totpBackupCodes.filter((c) => c !== code);
-      await updateUser(user.id, { totpBackupCodes: remaining });
+    if (!valid && record.totpBackupCodes?.length) {
+      const matched = record.totpBackupCodes.find((stored) => verifyBackupCode(stored, code));
+      if (matched) {
+        usedBackup = true;
+        const remaining = record.totpBackupCodes.filter((c) => c !== matched);
+        await updateUser(user.id, { totpBackupCodes: remaining });
+      }
     }
 
     if (!valid && !usedBackup) {

@@ -5,8 +5,8 @@
  */
 
 interface RateLimitOptions {
-  interval: number;           // Time window in milliseconds
-  limit: number;              // Max requests per interval
+  interval: number; // Time window in milliseconds
+  limit: number; // Max requests per interval
   uniqueTokenPerInterval?: number; // Max unique tokens to track (LRU cap)
 }
 
@@ -34,7 +34,10 @@ export function rateLimit(options: RateLimitOptions): RateLimiter {
     const now = Date.now();
     for (const [key, record] of tokenMap) {
       // Remove entries where all timestamps are outside the window
-      if (now - record.createdAt > interval && record.timestamps.every((ts) => now - ts > interval)) {
+      if (
+        now - record.createdAt > interval &&
+        record.timestamps.every((ts) => now - ts > interval)
+      ) {
         tokenMap.delete(key);
       }
     }
@@ -116,66 +119,73 @@ export class RateLimitError extends Error {
 // ---------------------------------------------------------------------------
 // Presets
 // ---------------------------------------------------------------------------
+//
+// Each preset auto-switches to a Redis-backed counter when Upstash is
+// configured — required for multi-instance deployments where in-memory
+// counters would let an attacker bypass limits by hitting different pods.
+import { rateLimitAuto } from "./rate-limit-redis";
+const auto = (opts: { intervalMs: number; limit: number; uniqueTokenPerInterval?: number }) =>
+  rateLimitAuto(opts, rateLimit);
 
 /** General API routes: 60 requests per minute */
-export const apiLimiter = rateLimit({
-  interval: 60 * 1000,
+export const apiLimiter = auto({
+  intervalMs: 60 * 1000,
   limit: 60,
   uniqueTokenPerInterval: 500,
 });
 
 /** Auth routes (login, register, password reset): 10 requests per minute */
-export const authLimiter = rateLimit({
-  interval: 60 * 1000,
+export const authLimiter = auto({
+  intervalMs: 60 * 1000,
   limit: 10,
   uniqueTokenPerInterval: 500,
 });
 
 /** Video generation: 5 requests per minute */
-export const videoGenLimiter = rateLimit({
-  interval: 60 * 1000,
+export const videoGenLimiter = auto({
+  intervalMs: 60 * 1000,
   limit: 5,
   uniqueTokenPerInterval: 200,
 });
 
 /** File uploads: 20 requests per minute */
-export const uploadLimiter = rateLimit({
-  interval: 60 * 1000,
+export const uploadLimiter = auto({
+  intervalMs: 60 * 1000,
   limit: 20,
   uniqueTokenPerInterval: 300,
 });
 
 /** Generation agent: 5 starts per hour (V8 §19.8) */
-export const agentStartLimiter = rateLimit({
-  interval: 60 * 60 * 1000,
+export const agentStartLimiter = auto({
+  intervalMs: 60 * 60 * 1000,
   limit: 5,
   uniqueTokenPerInterval: 500,
 });
 
 /** Sequel creation: 2 per hour (V8 §19.8) */
-export const sequelLimiter = rateLimit({
-  interval: 60 * 60 * 1000,
+export const sequelLimiter = auto({
+  intervalMs: 60 * 60 * 1000,
   limit: 2,
   uniqueTokenPerInterval: 500,
 });
 
 /** Signup: 3 per hour per IP (V8 §19.8) */
-export const signupLimiter = rateLimit({
-  interval: 60 * 60 * 1000,
+export const signupLimiter = auto({
+  intervalMs: 60 * 60 * 1000,
   limit: 3,
   uniqueTokenPerInterval: 500,
 });
 
 /** Comments: 20 per hour (V8 §19.8) */
-export const commentLimiter = rateLimit({
-  interval: 60 * 60 * 1000,
+export const commentLimiter = auto({
+  intervalMs: 60 * 60 * 1000,
   limit: 20,
   uniqueTokenPerInterval: 1000,
 });
 
 /** DMCA / reports: 5 per hour per IP (anti-abuse of signalement system) */
-export const reportLimiter = rateLimit({
-  interval: 60 * 60 * 1000,
+export const reportLimiter = auto({
+  intervalMs: 60 * 60 * 1000,
   limit: 5,
   uniqueTokenPerInterval: 500,
 });

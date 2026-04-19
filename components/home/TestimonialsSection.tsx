@@ -40,17 +40,15 @@ const TESTIMONIALS: Testimonial[] = [
 ];
 
 export function TestimonialsSection() {
-  const { t } = useTranslation();
-  const heading = t("home.testimonials.heading") || "Ils créent déjà avec AIflex";
-  const subtitle =
-    t("home.testimonials.subtitle") ||
-    "Des créateurs ont déjà transformé une idée en film publié et monétisé.";
+  const { tOr } = useTranslation();
+  const heading = tOr("home.testimonials.heading", "Ils créent déjà avec AIflex");
+  const subtitle = tOr(
+    "home.testimonials.subtitle",
+    "Des créateurs ont déjà transformé une idée en film publié et monétisé."
+  );
 
   return (
-    <section
-      className="mx-auto my-24 max-w-6xl px-6"
-      aria-labelledby="testimonials-heading"
-    >
+    <section className="mx-auto my-24 max-w-6xl px-6" aria-labelledby="testimonials-heading">
       <div className="mb-10 text-center">
         <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-flex-border bg-flex-panel px-3 py-1 text-[10px] font-bold uppercase tracking-[0.25em] text-flex-accent">
           ✦ témoignages

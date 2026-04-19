@@ -50,9 +50,7 @@ function rowToUser(row: any): UserRecord {
     bio: row.bio ?? undefined,
     emailVerified: row.emailVerified,
     emailVerifiedAt: row.emailVerifiedAt ? toEpoch(row.emailVerifiedAt) : undefined,
-    usage: row.usageMonth
-      ? { month: row.usageMonth, videosGenerated: row.usageVideos }
-      : undefined,
+    usage: row.usageMonth ? { month: row.usageMonth, videosGenerated: row.usageVideos } : undefined,
     plan: (row.plan as UserRecord["plan"]) ?? undefined,
     stripeCustomerId: row.stripeCustomerId ?? undefined,
     stripeSubscriptionId: row.stripeSubscriptionId ?? undefined,
@@ -68,6 +66,9 @@ function rowToSession(row: any): Session {
     userId: row.userId,
     createdAt: toEpoch(row.createdAt),
     expiresAt: toEpoch(row.expiresAt),
+    ipAddress: row.ipAddress ?? undefined,
+    userAgent: row.userAgent ?? undefined,
+    lastSeenAt: row.lastSeenAt ? toEpoch(row.lastSeenAt) : undefined,
   };
 }
 
@@ -177,9 +178,7 @@ async function ensureAdminSeed(): Promise<void> {
   const adminCount = await prisma.user.count({ where: { role: "admin" } });
   if (adminCount > 0) return;
 
-  const email = (process.env.ADMIN_EMAIL || "admin@aiflex.local")
-    .toLowerCase()
-    .trim();
+  const email = (process.env.ADMIN_EMAIL || "admin@aiflex.local").toLowerCase().trim();
 
   // No shared default password. Generate a random one and log it ONCE if the
   // operator didn't provide a sufficiently strong ADMIN_PASSWORD.
@@ -242,9 +241,7 @@ async function ensureAdminSeed(): Promise<void> {
 // Users
 // =====================================================================
 
-export async function findUserByEmail(
-  email: string
-): Promise<UserRecord | undefined> {
+export async function findUserByEmail(email: string): Promise<UserRecord | undefined> {
   await ensureAdminSeed();
   const row = await prisma.user.findUnique({
     where: { email: email.toLowerCase().trim() },
@@ -252,18 +249,14 @@ export async function findUserByEmail(
   return row ? rowToUser(row) : undefined;
 }
 
-export async function findUserById(
-  id: string
-): Promise<UserRecord | undefined> {
+export async function findUserById(id: string): Promise<UserRecord | undefined> {
   await ensureAdminSeed();
   const row = await prisma.user.findUnique({ where: { id } });
   return row ? rowToUser(row) : undefined;
 }
 
 /** Batch load users by id — one findMany instead of N findUnique calls. */
-export async function findUsersByIds(
-  ids: string[]
-): Promise<Map<string, UserRecord>> {
+export async function findUsersByIds(ids: string[]): Promise<Map<string, UserRecord>> {
   await ensureAdminSeed();
   const out = new Map<string, UserRecord>();
   if (ids.length === 0) return out;
@@ -294,17 +287,13 @@ export async function createUser(
       avatarSeed: input.avatarSeed || input.email,
       bio: input.bio,
       emailVerified: input.emailVerified ?? false,
-      emailVerifiedAt: input.emailVerifiedAt
-        ? toDate(input.emailVerifiedAt)
-        : undefined,
+      emailVerifiedAt: input.emailVerifiedAt ? toDate(input.emailVerifiedAt) : undefined,
       usageMonth: input.usage?.month,
       usageVideos: input.usage?.videosGenerated ?? 0,
       plan: input.plan ?? "free",
       stripeCustomerId: input.stripeCustomerId,
       stripeSubscriptionId: input.stripeSubscriptionId,
-      planExpiresAt: input.planExpiresAt
-        ? toDate(input.planExpiresAt)
-        : undefined,
+      planExpiresAt: input.planExpiresAt ? toDate(input.planExpiresAt) : undefined,
       oauthProvider: input.oauthProvider,
       oauthId: input.oauthId,
     },
@@ -329,24 +318,18 @@ export async function updateUser(
   if (patch.bio !== undefined) data.bio = patch.bio;
   if (patch.emailVerified !== undefined) data.emailVerified = patch.emailVerified;
   if (patch.emailVerifiedAt !== undefined)
-    data.emailVerifiedAt = patch.emailVerifiedAt
-      ? toDate(patch.emailVerifiedAt)
-      : null;
+    data.emailVerifiedAt = patch.emailVerifiedAt ? toDate(patch.emailVerifiedAt) : null;
   if (patch.usage !== undefined) {
     data.usageMonth = patch.usage?.month ?? null;
     data.usageVideos = patch.usage?.videosGenerated ?? 0;
   }
   if (patch.plan !== undefined) data.plan = patch.plan;
-  if (patch.stripeCustomerId !== undefined)
-    data.stripeCustomerId = patch.stripeCustomerId;
+  if (patch.stripeCustomerId !== undefined) data.stripeCustomerId = patch.stripeCustomerId;
   if (patch.stripeSubscriptionId !== undefined)
     data.stripeSubscriptionId = patch.stripeSubscriptionId;
   if (patch.planExpiresAt !== undefined)
-    data.planExpiresAt = patch.planExpiresAt
-      ? toDate(patch.planExpiresAt)
-      : null;
-  if (patch.oauthProvider !== undefined)
-    data.oauthProvider = patch.oauthProvider;
+    data.planExpiresAt = patch.planExpiresAt ? toDate(patch.planExpiresAt) : null;
+  if (patch.oauthProvider !== undefined) data.oauthProvider = patch.oauthProvider;
   if (patch.oauthId !== undefined) data.oauthId = patch.oauthId;
 
   const row = await prisma.user.update({ where: { id }, data });
@@ -386,10 +369,7 @@ export async function getCurrentUsage(
   return { month, videosGenerated: row.usageVideos };
 }
 
-export async function incrementVideoUsage(
-  userId: string,
-  n = 1
-): Promise<number> {
+export async function incrementVideoUsage(userId: string, n = 1): Promise<number> {
   const month = currentMonthKey();
   const row = await prisma.user.findUnique({
     where: { id: userId },
@@ -411,21 +391,31 @@ export async function incrementVideoUsage(
 // Sessions
 // =====================================================================
 
-export async function createSession(userId: string): Promise<Session> {
+export async function createSession(
+  userId: string,
+  metadata?: { ipAddress?: string; userAgent?: string }
+): Promise<Session> {
   const { randomBytes } = await import("node:crypto");
   const token = randomBytes(32).toString("hex");
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 30);
+  // 14 days — matches the cookie maxAge after the audit-driven shrink.
+  const expiresAt = new Date(now.getTime() + 1000 * 60 * 60 * 24 * 14);
 
   const row = await prisma.session.create({
-    data: { token, userId, createdAt: now, expiresAt },
+    data: {
+      token,
+      userId,
+      createdAt: now,
+      expiresAt,
+      ipAddress: metadata?.ipAddress?.slice(0, 64),
+      userAgent: metadata?.userAgent?.slice(0, 400),
+      lastSeenAt: now,
+    },
   });
   return rowToSession(row);
 }
 
-export async function findSession(
-  token: string
-): Promise<Session | undefined> {
+export async function findSession(token: string): Promise<Session | undefined> {
   const row = await prisma.session.findUnique({ where: { token } });
   if (!row) return undefined;
   if (row.expiresAt.getTime() < Date.now()) {
@@ -443,9 +433,7 @@ export async function deleteSession(token: string): Promise<void> {
 // Projects
 // =====================================================================
 
-export async function listProjectsByOwner(
-  ownerId: string
-): Promise<Project[]> {
+export async function listProjectsByOwner(ownerId: string): Promise<Project[]> {
   const rows = await prisma.project.findMany({
     where: { ownerId },
     orderBy: { updatedAt: "desc" },
@@ -473,9 +461,7 @@ export async function listPublicProjects(): Promise<Project[]> {
   });
 }
 
-export async function getProjectById(
-  id: string
-): Promise<Project | undefined> {
+export async function getProjectById(id: string): Promise<Project | undefined> {
   const row = await prisma.project.findUnique({ where: { id } });
   return row ? rowToProject(row) : undefined;
 }
@@ -541,8 +527,7 @@ export async function updateProject(
   if (patch.likes !== undefined) data.likes = patch.likes;
   if (patch.author !== undefined) data.author = patch.author;
   if (patch.audioTrackUrl !== undefined) data.audioTrackUrl = patch.audioTrackUrl;
-  if (patch.audioTrackStatus !== undefined)
-    data.audioTrackStatus = patch.audioTrackStatus;
+  if (patch.audioTrackStatus !== undefined) data.audioTrackStatus = patch.audioTrackStatus;
 
   // updatedAt is handled by @updatedAt in schema
   const row = await prisma.project.update({ where: { id }, data });
@@ -564,10 +549,7 @@ export async function deleteProjectById(id: string): Promise<boolean> {
 // Likes
 // =====================================================================
 
-export async function hasLiked(
-  userId: string,
-  projectId: string
-): Promise<boolean> {
+export async function hasLiked(userId: string, projectId: string): Promise<boolean> {
   const row = await prisma.like.findUnique({
     where: { userId_projectId: { userId, projectId } },
   });
@@ -620,20 +602,14 @@ export async function unlikeProject(
 // Watchlist
 // =====================================================================
 
-export async function inWatchlist(
-  userId: string,
-  projectId: string
-): Promise<boolean> {
+export async function inWatchlist(userId: string, projectId: string): Promise<boolean> {
   const row = await prisma.watchlist.findUnique({
     where: { userId_projectId: { userId, projectId } },
   });
   return !!row;
 }
 
-export async function addToWatchlist(
-  userId: string,
-  projectId: string
-): Promise<void> {
+export async function addToWatchlist(userId: string, projectId: string): Promise<void> {
   const project = await prisma.project.findUnique({ where: { id: projectId } });
   if (!project) throw new Error("Projet introuvable");
 
@@ -644,10 +620,7 @@ export async function addToWatchlist(
   });
 }
 
-export async function removeFromWatchlist(
-  userId: string,
-  projectId: string
-): Promise<void> {
+export async function removeFromWatchlist(userId: string, projectId: string): Promise<void> {
   await prisma.watchlist
     .delete({ where: { userId_projectId: { userId, projectId } } })
     .catch(() => {});
@@ -660,7 +633,10 @@ export async function listWatchlist(userId: string): Promise<Project[]> {
     include: { project: true },
   });
   return entries
-    .filter((e: { project: { published: boolean; visibility: string } }) => e.project.published && e.project.visibility === "public")
+    .filter(
+      (e: { project: { published: boolean; visibility: string } }) =>
+        e.project.published && e.project.visibility === "public"
+    )
     .map((e: { project: Record<string, unknown> }) => rowToProject(e.project));
 }
 
@@ -668,9 +644,7 @@ export async function listWatchlist(userId: string): Promise<Project[]> {
 // Comments
 // =====================================================================
 
-export async function listCommentsForProject(
-  projectId: string
-): Promise<Comment[]> {
+export async function listCommentsForProject(projectId: string): Promise<Comment[]> {
   const rows = await prisma.comment.findMany({
     where: { projectId, parentId: null },
     orderBy: { createdAt: "desc" },
@@ -686,16 +660,12 @@ export async function listReplies(commentId: string): Promise<Comment[]> {
   return rows.map(rowToComment);
 }
 
-export async function countCommentsForProject(
-  projectId: string
-): Promise<number> {
+export async function countCommentsForProject(projectId: string): Promise<number> {
   return prisma.comment.count({ where: { projectId } });
 }
 
 /** Batch comment count — single groupBy query instead of N individual counts. */
-export async function countCommentsForProjects(
-  projectIds: string[]
-): Promise<Map<string, number>> {
+export async function countCommentsForProjects(projectIds: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   for (const id of projectIds) out.set(id, 0);
   if (projectIds.length === 0) return out;
@@ -755,9 +725,7 @@ export async function addComment(input: {
   return rowToComment(row);
 }
 
-export async function getCommentById(
-  id: string
-): Promise<Comment | undefined> {
+export async function getCommentById(id: string): Promise<Comment | undefined> {
   const row = await prisma.comment.findUnique({ where: { id } });
   return row ? rowToComment(row) : undefined;
 }
@@ -825,10 +793,7 @@ export async function createNotification(input: {
   return rowToNotification(row);
 }
 
-export async function listNotifications(
-  userId: string,
-  limit = 50
-): Promise<Notification[]> {
+export async function listNotifications(userId: string, limit = 50): Promise<Notification[]> {
   const rows = await prisma.notification.findMany({
     where: { userId },
     orderBy: { createdAt: "desc" },
@@ -837,28 +802,20 @@ export async function listNotifications(
   return rows.map(rowToNotification);
 }
 
-export async function countUnreadNotifications(
-  userId: string
-): Promise<number> {
+export async function countUnreadNotifications(userId: string): Promise<number> {
   return prisma.notification.count({
     where: { userId, read: false },
   });
 }
 
-export async function markNotificationRead(
-  userId: string,
-  notifId: string
-): Promise<void> {
-  await prisma.notification
-    .updateMany({
-      where: { id: notifId, userId, read: false },
-      data: { read: true },
-    });
+export async function markNotificationRead(userId: string, notifId: string): Promise<void> {
+  await prisma.notification.updateMany({
+    where: { id: notifId, userId, read: false },
+    data: { read: true },
+  });
 }
 
-export async function markAllNotificationsRead(
-  userId: string
-): Promise<void> {
+export async function markAllNotificationsRead(userId: string): Promise<void> {
   await prisma.notification.updateMany({
     where: { userId, read: false },
     data: { read: true },
@@ -920,11 +877,23 @@ export async function listContinueWatching(
   });
 
   return rows
-    .filter((r: { project: { published: boolean; visibility: string } }) => r.project.published && r.project.visibility === "public")
-    .map((r: { project: Record<string, unknown>; userId: string; projectId: string; lastSceneIndex: number; progress: number; updatedAt: Date }) => ({
-      ...rowToWatchProgress(r),
-      project: rowToProject(r.project),
-    }));
+    .filter(
+      (r: { project: { published: boolean; visibility: string } }) =>
+        r.project.published && r.project.visibility === "public"
+    )
+    .map(
+      (r: {
+        project: Record<string, unknown>;
+        userId: string;
+        projectId: string;
+        lastSceneIndex: number;
+        progress: number;
+        updatedAt: Date;
+      }) => ({
+        ...rowToWatchProgress(r),
+        project: rowToProject(r.project),
+      })
+    );
 }
 
 // =====================================================================
@@ -953,9 +922,7 @@ export async function createReport(input: {
   return rowToReport(row);
 }
 
-export async function listReports(
-  status?: Report["status"]
-): Promise<Report[]> {
+export async function listReports(status?: Report["status"]): Promise<Report[]> {
   const rows = await prisma.report.findMany({
     where: status ? { status } : undefined,
     orderBy: { createdAt: "desc" },
@@ -987,10 +954,7 @@ export async function updateReportStatus(
 // Follows
 // =====================================================================
 
-export async function followUser(
-  followerId: string,
-  followedId: string
-): Promise<boolean> {
+export async function followUser(followerId: string, followedId: string): Promise<boolean> {
   if (followerId === followedId) return false;
   try {
     await prisma.follow.create({ data: { followerId, followedId } });
@@ -1001,10 +965,7 @@ export async function followUser(
   }
 }
 
-export async function unfollowUser(
-  followerId: string,
-  followedId: string
-): Promise<boolean> {
+export async function unfollowUser(followerId: string, followedId: string): Promise<boolean> {
   try {
     await prisma.follow.delete({
       where: { followerId_followedId: { followerId, followedId } },
@@ -1015,10 +976,7 @@ export async function unfollowUser(
   }
 }
 
-export async function isFollowing(
-  followerId: string,
-  followedId: string
-): Promise<boolean> {
+export async function isFollowing(followerId: string, followedId: string): Promise<boolean> {
   const row = await prisma.follow.findUnique({
     where: { followerId_followedId: { followerId, followedId } },
   });
@@ -1049,13 +1007,8 @@ export async function listFollowing(userId: string): Promise<UserRecord[]> {
   return rows.map((r: { followed: Record<string, unknown> }) => rowToUser(r.followed));
 }
 
-export async function listVisibleProjects(
-  ownerId: string,
-  viewerId?: string
-): Promise<Project[]> {
-  const isFollower = viewerId
-    ? await isFollowing(viewerId, ownerId)
-    : false;
+export async function listVisibleProjects(ownerId: string, viewerId?: string): Promise<Project[]> {
+  const isFollower = viewerId ? await isFollowing(viewerId, ownerId) : false;
   const isOwner = viewerId === ownerId;
 
   const visibilities = ["public"];
@@ -1150,9 +1103,7 @@ export async function getSettings(): Promise<PlatformSettings> {
   };
 }
 
-export async function updateSettings(
-  patch: Partial<PlatformSettings>
-): Promise<PlatformSettings> {
+export async function updateSettings(patch: Partial<PlatformSettings>): Promise<PlatformSettings> {
   const current = await getSettings();
   const merged = { ...current, ...patch };
 
@@ -1191,9 +1142,7 @@ export async function updateSettings(
 // Push Subscriptions
 // =====================================================================
 
-export async function savePushSubscription(
-  sub: PushSubscription
-): Promise<void> {
+export async function savePushSubscription(sub: PushSubscription): Promise<void> {
   await prisma.pushSubscription.upsert({
     where: {
       userId_endpoint: { userId: sub.userId, endpoint: sub.endpoint },
@@ -1212,18 +1161,13 @@ export async function savePushSubscription(
   });
 }
 
-export async function removePushSubscription(
-  userId: string,
-  endpoint: string
-): Promise<void> {
+export async function removePushSubscription(userId: string, endpoint: string): Promise<void> {
   await prisma.pushSubscription
     .delete({ where: { userId_endpoint: { userId, endpoint } } })
     .catch(() => {});
 }
 
-export async function getPushSubscriptionsForUser(
-  userId: string
-): Promise<PushSubscription[]> {
+export async function getPushSubscriptionsForUser(userId: string): Promise<PushSubscription[]> {
   const rows = await prisma.pushSubscription.findMany({
     where: { userId },
   });
@@ -1250,25 +1194,70 @@ export async function listProfiles(userId: string): Promise<Profile[]> {
 export async function getProfileById(id: string): Promise<Profile | null> {
   const r = await prisma.profile.findUnique({ where: { id } });
   if (!r) return null;
-  return { id: r.id, userId: r.userId, name: r.name, avatarSeed: (r as any).avatarSeed ?? undefined, isChild: r.isChild, maxRating: r.maxRating as Profile["maxRating"], createdAt: toEpoch(r.createdAt) };
+  return {
+    id: r.id,
+    userId: r.userId,
+    name: r.name,
+    avatarSeed: (r as any).avatarSeed ?? undefined,
+    isChild: r.isChild,
+    maxRating: r.maxRating as Profile["maxRating"],
+    createdAt: toEpoch(r.createdAt),
+  };
 }
 
 export async function createProfile(input: Omit<Profile, "id" | "createdAt">): Promise<Profile> {
   const r = await prisma.profile.create({
-    data: { userId: input.userId, name: input.name, avatarSeed: input.avatarSeed, isChild: input.isChild, maxRating: input.maxRating },
+    data: {
+      userId: input.userId,
+      name: input.name,
+      avatarSeed: input.avatarSeed,
+      isChild: input.isChild,
+      maxRating: input.maxRating,
+    },
   });
-  return { id: r.id, userId: r.userId, name: r.name, avatarSeed: (r as any).avatarSeed ?? undefined, isChild: r.isChild, maxRating: r.maxRating as Profile["maxRating"], createdAt: toEpoch(r.createdAt) };
+  return {
+    id: r.id,
+    userId: r.userId,
+    name: r.name,
+    avatarSeed: (r as any).avatarSeed ?? undefined,
+    isChild: r.isChild,
+    maxRating: r.maxRating as Profile["maxRating"],
+    createdAt: toEpoch(r.createdAt),
+  };
 }
 
 export async function updateProfile(id: string, patch: Partial<Profile>): Promise<Profile | null> {
   try {
-    const r = await prisma.profile.update({ where: { id }, data: { ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.isChild !== undefined ? { isChild: patch.isChild } : {}), ...(patch.maxRating !== undefined ? { maxRating: patch.maxRating } : {}), ...(patch.avatarSeed !== undefined ? { avatarSeed: patch.avatarSeed } : {}) } });
-    return { id: r.id, userId: r.userId, name: r.name, avatarSeed: (r as any).avatarSeed ?? undefined, isChild: r.isChild, maxRating: r.maxRating as Profile["maxRating"], createdAt: toEpoch(r.createdAt) };
-  } catch { return null; }
+    const r = await prisma.profile.update({
+      where: { id },
+      data: {
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.isChild !== undefined ? { isChild: patch.isChild } : {}),
+        ...(patch.maxRating !== undefined ? { maxRating: patch.maxRating } : {}),
+        ...(patch.avatarSeed !== undefined ? { avatarSeed: patch.avatarSeed } : {}),
+      },
+    });
+    return {
+      id: r.id,
+      userId: r.userId,
+      name: r.name,
+      avatarSeed: (r as any).avatarSeed ?? undefined,
+      isChild: r.isChild,
+      maxRating: r.maxRating as Profile["maxRating"],
+      createdAt: toEpoch(r.createdAt),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteProfile(id: string): Promise<boolean> {
-  try { await prisma.profile.delete({ where: { id } }); return true; } catch { return false; }
+  try {
+    await prisma.profile.delete({ where: { id } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // =====================================================================
@@ -1290,9 +1279,17 @@ export async function listConversations(userId: string): Promise<Conversation[]>
 }
 
 export async function getConversationById(id: string): Promise<Conversation | null> {
-  const c = await prisma.conversation.findUnique({ where: { id }, include: { participants: true } });
+  const c = await prisma.conversation.findUnique({
+    where: { id },
+    include: { participants: true },
+  });
   if (!c) return null;
-  return { id: c.id, participantIds: (c as any).participants.map((p: any) => p.userId), lastMessageAt: toEpoch(c.lastMessageAt), createdAt: toEpoch(c.createdAt) };
+  return {
+    id: c.id,
+    participantIds: (c as any).participants.map((p: any) => p.userId),
+    lastMessageAt: toEpoch(c.lastMessageAt),
+    createdAt: toEpoch(c.createdAt),
+  };
 }
 
 export async function findOrCreateConversation(participantIds: string[]): Promise<Conversation> {
@@ -1304,7 +1301,12 @@ export async function findOrCreateConversation(participantIds: string[]): Promis
   for (const c of allConvs) {
     const cIds = (c as any).participants.map((p: any) => p.userId).sort();
     if (cIds.length === sorted.length && cIds.every((id: string, i: number) => id === sorted[i])) {
-      return { id: c.id, participantIds: cIds, lastMessageAt: toEpoch(c.lastMessageAt), createdAt: toEpoch(c.createdAt) };
+      return {
+        id: c.id,
+        participantIds: cIds,
+        lastMessageAt: toEpoch(c.lastMessageAt),
+        createdAt: toEpoch(c.createdAt),
+      };
     }
   }
   // Create new
@@ -1312,7 +1314,12 @@ export async function findOrCreateConversation(participantIds: string[]): Promis
     data: { participants: { create: sorted.map((uid) => ({ userId: uid })) } },
     include: { participants: true },
   });
-  return { id: conv.id, participantIds: sorted, lastMessageAt: toEpoch(conv.lastMessageAt), createdAt: toEpoch(conv.createdAt) };
+  return {
+    id: conv.id,
+    participantIds: sorted,
+    lastMessageAt: toEpoch(conv.lastMessageAt),
+    createdAt: toEpoch(conv.createdAt),
+  };
 }
 
 export async function listMessages(conversationId: string, limit = 50): Promise<DirectMessage[]> {
@@ -1321,15 +1328,36 @@ export async function listMessages(conversationId: string, limit = 50): Promise<
     orderBy: { createdAt: "asc" },
     take: limit,
   });
-  return rows.map((r: any) => ({ id: r.id, conversationId: r.conversationId, senderId: r.senderId, body: r.body, read: r.read, createdAt: toEpoch(r.createdAt) }));
+  return rows.map((r: any) => ({
+    id: r.id,
+    conversationId: r.conversationId,
+    senderId: r.senderId,
+    body: r.body,
+    read: r.read,
+    createdAt: toEpoch(r.createdAt),
+  }));
 }
 
-export async function sendMessage(input: { conversationId: string; senderId: string; body: string }): Promise<DirectMessage> {
+export async function sendMessage(input: {
+  conversationId: string;
+  senderId: string;
+  body: string;
+}): Promise<DirectMessage> {
   const r = await prisma.directMessage.create({
     data: { conversationId: input.conversationId, senderId: input.senderId, body: input.body },
   });
-  await prisma.conversation.update({ where: { id: input.conversationId }, data: { lastMessageAt: new Date() } });
-  return { id: r.id, conversationId: r.conversationId, senderId: r.senderId, body: r.body, read: r.read, createdAt: toEpoch(r.createdAt) };
+  await prisma.conversation.update({
+    where: { id: input.conversationId },
+    data: { lastMessageAt: new Date() },
+  });
+  return {
+    id: r.id,
+    conversationId: r.conversationId,
+    senderId: r.senderId,
+    body: r.body,
+    read: r.read,
+    createdAt: toEpoch(r.createdAt),
+  };
 }
 
 export async function markMessagesRead(conversationId: string, userId: string): Promise<void> {
@@ -1353,29 +1381,66 @@ export async function countUnreadMessages(userId: string): Promise<number> {
 
 export async function listCollaborators(projectId: string): Promise<Collaborator[]> {
   const rows = await prisma.collaborator.findMany({ where: { projectId } });
-  return rows.map((r: any) => ({ id: r.id, projectId: r.projectId, userId: r.userId, role: r.role as CollaboratorRole, invitedBy: r.invitedBy, createdAt: toEpoch(r.createdAt) }));
+  return rows.map((r: any) => ({
+    id: r.id,
+    projectId: r.projectId,
+    userId: r.userId,
+    role: r.role as CollaboratorRole,
+    invitedBy: r.invitedBy,
+    createdAt: toEpoch(r.createdAt),
+  }));
 }
 
-export async function addCollaborator(input: { projectId: string; userId: string; role: CollaboratorRole; invitedBy: string }): Promise<Collaborator> {
+export async function addCollaborator(input: {
+  projectId: string;
+  userId: string;
+  role: CollaboratorRole;
+  invitedBy: string;
+}): Promise<Collaborator> {
   const r = await prisma.collaborator.upsert({
     where: { projectId_userId: { projectId: input.projectId, userId: input.userId } },
-    create: { projectId: input.projectId, userId: input.userId, role: input.role, invitedBy: input.invitedBy },
+    create: {
+      projectId: input.projectId,
+      userId: input.userId,
+      role: input.role,
+      invitedBy: input.invitedBy,
+    },
     update: { role: input.role },
   });
-  return { id: r.id, projectId: r.projectId, userId: r.userId, role: r.role as CollaboratorRole, invitedBy: r.invitedBy, createdAt: toEpoch(r.createdAt) };
+  return {
+    id: r.id,
+    projectId: r.projectId,
+    userId: r.userId,
+    role: r.role as CollaboratorRole,
+    invitedBy: r.invitedBy,
+    createdAt: toEpoch(r.createdAt),
+  };
 }
 
 export async function removeCollaborator(projectId: string, userId: string): Promise<boolean> {
-  try { await prisma.collaborator.delete({ where: { projectId_userId: { projectId, userId } } }); return true; } catch { return false; }
+  try {
+    await prisma.collaborator.delete({ where: { projectId_userId: { projectId, userId } } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export async function getCollaboratorRole(projectId: string, userId: string): Promise<CollaboratorRole | null> {
-  const r = await prisma.collaborator.findUnique({ where: { projectId_userId: { projectId, userId } } });
+export async function getCollaboratorRole(
+  projectId: string,
+  userId: string
+): Promise<CollaboratorRole | null> {
+  const r = await prisma.collaborator.findUnique({
+    where: { projectId_userId: { projectId, userId } },
+  });
   return r ? (r.role as CollaboratorRole) : null;
 }
 
 export async function listUserCollaborations(userId: string): Promise<Project[]> {
-  const collabs = await prisma.collaborator.findMany({ where: { userId }, include: { project: true } });
+  const collabs = await prisma.collaborator.findMany({
+    where: { userId },
+    include: { project: true },
+  });
   return collabs.map((c: any) => rowToProject(c.project));
 }
 
@@ -1385,17 +1450,51 @@ export async function listUserCollaborations(userId: string): Promise<Project[]>
 
 export async function createTip(input: Omit<Tip, "id" | "createdAt">): Promise<Tip> {
   const r = await prisma.tip.create({
-    data: { fromUserId: input.fromUserId, toUserId: input.toUserId, amount: input.amount, currency: input.currency, stripePaymentId: input.stripePaymentId, message: input.message },
+    data: {
+      fromUserId: input.fromUserId,
+      toUserId: input.toUserId,
+      amount: input.amount,
+      currency: input.currency,
+      stripePaymentId: input.stripePaymentId,
+      message: input.message,
+    },
   });
-  return { id: r.id, fromUserId: r.fromUserId, toUserId: r.toUserId, amount: r.amount, currency: r.currency, stripePaymentId: r.stripePaymentId ?? undefined, message: r.message ?? undefined, createdAt: toEpoch(r.createdAt) };
+  return {
+    id: r.id,
+    fromUserId: r.fromUserId,
+    toUserId: r.toUserId,
+    amount: r.amount,
+    currency: r.currency,
+    stripePaymentId: r.stripePaymentId ?? undefined,
+    message: r.message ?? undefined,
+    createdAt: toEpoch(r.createdAt),
+  };
 }
 
 export async function listTipsReceived(userId: string): Promise<Tip[]> {
-  const rows = await prisma.tip.findMany({ where: { toUserId: userId }, orderBy: { createdAt: "desc" } });
-  return rows.map((r: any) => ({ id: r.id, fromUserId: r.fromUserId, toUserId: r.toUserId, amount: r.amount, currency: r.currency, stripePaymentId: r.stripePaymentId ?? undefined, message: r.message ?? undefined, createdAt: toEpoch(r.createdAt) }));
+  const rows = await prisma.tip.findMany({
+    where: { toUserId: userId },
+    orderBy: { createdAt: "desc" },
+  });
+  return rows.map((r: any) => ({
+    id: r.id,
+    fromUserId: r.fromUserId,
+    toUserId: r.toUserId,
+    amount: r.amount,
+    currency: r.currency,
+    stripePaymentId: r.stripePaymentId ?? undefined,
+    message: r.message ?? undefined,
+    createdAt: toEpoch(r.createdAt),
+  }));
 }
 
-export async function getTipStats(userId: string): Promise<{ totalReceived: number; tipCount: number }> {
-  const result = await prisma.tip.aggregate({ where: { toUserId: userId }, _sum: { amount: true }, _count: true });
+export async function getTipStats(
+  userId: string
+): Promise<{ totalReceived: number; tipCount: number }> {
+  const result = await prisma.tip.aggregate({
+    where: { toUserId: userId },
+    _sum: { amount: true },
+    _count: true,
+  });
   return { totalReceived: result._sum.amount ?? 0, tipCount: result._count };
 }

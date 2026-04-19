@@ -7,11 +7,19 @@ import { timingSafeEqual } from "node:crypto";
  * Defense in depth:
  *   1. `x-cron-secret` header must match CRON_SECRET (timing-safe compare).
  *   2. Remote IP (from x-forwarded-for, falling back to req direct) must be
- *      in CRON_ALLOWED_IPS (comma-separated) when that env var is set.
+ *      in CRON_ALLOWED_IPS (comma-separated). MANDATORY in production unless
+ *      CRON_ALLOWLIST_OPTIONAL=1 (explicit opt-out — use only when running
+ *      behind a provider that already IP-restricts cron callers).
  *
- * If CRON_ALLOWED_IPS is unset we degrade to secret-only — fine for local
- * dev but prod MUST set it.
+ * Local dev skips the allowlist when it isn't configured.
  */
+
+function isRuntimeProduction(): boolean {
+  if (process.env.NODE_ENV === "production") return true;
+  if (process.env.VERCEL_ENV === "production") return true;
+  if (process.env.AIFLEX_FORCE_PROD_GUARDS === "1") return true;
+  return false;
+}
 
 function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a, "utf8");
@@ -21,6 +29,10 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 function extractClientIp(req: Request): string | null {
+  // Cron endpoints already require the caller to hold CRON_SECRET, which
+  // is a much higher bar than a public endpoint. The IP allowlist is a
+  // defense-in-depth layer on top of that secret, so it's fine to accept
+  // the left-most XFF here as long as CRON_SECRET verification ran first.
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) {
     const first = fwd.split(",")[0]?.trim();
@@ -50,11 +62,16 @@ export function verifyCronRequest(req: Request): CronAuthResult {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  if (allowList.length > 0) {
-    const clientIp = extractClientIp(req);
-    if (!clientIp || !allowList.includes(clientIp)) {
+  if (allowList.length === 0) {
+    if (isRuntimeProduction() && process.env.CRON_ALLOWLIST_OPTIONAL !== "1") {
       return { ok: false, reason: "ip-not-allowed" };
     }
+    return { ok: true };
+  }
+
+  const clientIp = extractClientIp(req);
+  if (!clientIp || !allowList.includes(clientIp)) {
+    return { ok: false, reason: "ip-not-allowed" };
   }
 
   return { ok: true };

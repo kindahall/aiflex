@@ -7,7 +7,6 @@ import {
   listCommentsForProject,
   listReplies,
 } from "@/lib/server-db";
-import { listUsers } from "@/lib/server-db";
 import { notify } from "@/lib/notify";
 import { moderateContentSafe } from "@/lib/moderation";
 import { commentLimiter, checkPerUser, RateLimitError } from "@/lib/rate-limit";
@@ -34,25 +33,42 @@ async function loadPublic(id: string) {
   return project;
 }
 
-export async function GET(
-  req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+const DEFAULT_COMMENT_LIMIT = 50;
+const MAX_COMMENT_LIMIT = 200;
+
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     await loadPublic(id);
 
     const url = new URL(req.url);
     const parentId = url.searchParams.get("parentId");
+    const rawLimit = Number(url.searchParams.get("limit") ?? DEFAULT_COMMENT_LIMIT);
+    const rawOffset = Number(url.searchParams.get("offset") ?? 0);
+    const limit = Math.min(
+      MAX_COMMENT_LIMIT,
+      Math.max(1, Number.isFinite(rawLimit) ? rawLimit : DEFAULT_COMMENT_LIMIT)
+    );
+    const offset = Math.max(0, Number.isFinite(rawOffset) ? rawOffset : 0);
 
     if (parentId) {
-      // Return replies to a specific comment.
+      // Return replies to a specific comment (bounded — threads can go wide).
       const replies = await listReplies(parentId);
-      return NextResponse.json({ comments: replies });
+      const total = replies.length;
+      const page = replies.slice(offset, offset + limit);
+      return NextResponse.json({
+        comments: page,
+        pagination: { total, limit, offset, nextOffset: offset + page.length },
+      });
     }
 
     const comments = await listCommentsForProject(id);
-    return NextResponse.json({ comments });
+    const total = comments.length;
+    const page = comments.slice(offset, offset + limit);
+    return NextResponse.json({
+      comments: page,
+      pagination: { total, limit, offset, nextOffset: offset + page.length },
+    });
   } catch (err) {
     if (err instanceof AuthError)
       return NextResponse.json({ error: err.message }, { status: err.status });
@@ -65,10 +81,7 @@ interface PostBody {
   parentId?: string;
 }
 
-export async function POST(
-  req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
     const user = await requireUser();
@@ -91,16 +104,10 @@ export async function POST(
     const body = (payload.body || "").trim();
 
     if (body.length < MIN_BODY) {
-      return NextResponse.json(
-        { error: "Le commentaire ne peut pas être vide." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Le commentaire ne peut pas être vide." }, { status: 400 });
     }
     if (body.length > MAX_BODY) {
-      return NextResponse.json(
-        { error: `Maximum ${MAX_BODY} caractères.` },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: `Maximum ${MAX_BODY} caractères.` }, { status: 400 });
     }
 
     // Text moderation. Bypassed in dev (no ANTHROPIC_API_KEY) — we still
@@ -125,10 +132,7 @@ export async function POST(
     if (parentId) {
       const parent = await getCommentById(parentId);
       if (!parent || parent.projectId !== id) {
-        return NextResponse.json(
-          { error: "Commentaire parent introuvable." },
-          { status: 404 }
-        );
+        return NextResponse.json({ error: "Commentaire parent introuvable." }, { status: 404 });
       }
     }
 
@@ -157,10 +161,8 @@ export async function POST(
     const mentions = extractMentions(body);
     if (mentions.length > 0) {
       try {
-        const allUsers = await listUsers();
-        const lowerNameToUser = new Map(
-          allUsers.map((u) => [u.name.toLowerCase(), u])
-        );
+        const { findUsersByNames } = await import("@/lib/server-db");
+        const lowerNameToUser = await findUsersByNames(mentions);
         for (const name of mentions) {
           const target = lowerNameToUser.get(name);
           if (!target || target.id === user.id || target.id === _project.ownerId) {

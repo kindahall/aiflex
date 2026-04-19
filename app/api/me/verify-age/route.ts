@@ -40,7 +40,19 @@ export async function POST(req: Request) {
     if (body.level === "verified") {
       const { isYotiConfigured, getYotiSessionStatus } = await import("@/lib/yoti");
       if (!isYotiConfigured()) {
-        // Stub mode — degrade gracefully so dev doesn't break, but tag it.
+        // Fail-closed in production: returning self_declared when Yoti is
+        // missing would let minors bypass age verification on a
+        // misconfigured deploy. Dev/test keep the degraded fallback.
+        const isProd =
+          process.env.NODE_ENV === "production" || process.env.AGE_VERIFICATION_ENFORCE === "1";
+        if (isProd) {
+          return NextResponse.json(
+            {
+              error: "Vérification d'âge indisponible (YOTI_API_KEY manquant).",
+            },
+            { status: 503 }
+          );
+        }
         effectiveLevel = "self_declared";
         warning =
           "Vérification Yoti non configurée (YOTI_API_KEY manquant) — fallback en self_declared.";

@@ -36,12 +36,20 @@ export function isOneShotCheckout(obj: Record<string, unknown>): boolean {
 /**
  * Route the event to the right activator based on metadata.kind.
  */
-export async function handleOneShotCheckoutCompleted(
-  obj: Record<string, unknown>
-): Promise<void> {
+export async function handleOneShotCheckoutCompleted(obj: Record<string, unknown>): Promise<void> {
   const meta = (obj.metadata as Record<string, string>) || {};
   const kind = meta.kind as OneShotKind;
   const paymentId = (obj.payment_intent as string) || (obj.id as string);
+
+  // Stripe emits checkout.session.completed with `payment_status = "unpaid"`
+  // for async payment flows that have not yet cleared (e.g. SEPA debit,
+  // pending fraud review). Never activate the side-effects until the
+  // status is "paid" — otherwise we'd credit tips / unlock PPV / publish
+  // uploads for money that never actually settled.
+  const paymentStatus = obj.payment_status as string | undefined;
+  if (paymentStatus && paymentStatus !== "paid" && paymentStatus !== "no_payment_required") {
+    return;
+  }
 
   switch (kind) {
     case "boost":
@@ -66,10 +74,7 @@ export async function handleOneShotCheckoutCompleted(
 // Boost
 // ---------------------------------------------------------------------------
 
-async function activateBoost(
-  obj: Record<string, unknown>,
-  paymentId: string
-): Promise<void> {
+async function activateBoost(obj: Record<string, unknown>, paymentId: string): Promise<void> {
   const meta = obj.metadata as Record<string, string>;
   const userId = meta.userId;
   const projectId = meta.projectId;
@@ -106,10 +111,7 @@ async function activateBoost(
 // Sequel — activate a GenerationJob that was created in "awaiting_payment"
 // ---------------------------------------------------------------------------
 
-async function activateSequel(
-  obj: Record<string, unknown>,
-  paymentId: string
-): Promise<void> {
+async function activateSequel(obj: Record<string, unknown>, paymentId: string): Promise<void> {
   const meta = obj.metadata as Record<string, string>;
   const jobId = meta.jobId;
   if (!jobId) return;
@@ -145,10 +147,7 @@ async function activateSequel(
 // Upload — flip an upload draft to pending_review once paid
 // ---------------------------------------------------------------------------
 
-async function activateUpload(
-  obj: Record<string, unknown>,
-  paymentId: string
-): Promise<void> {
+async function activateUpload(obj: Record<string, unknown>, paymentId: string): Promise<void> {
   const meta = obj.metadata as Record<string, string>;
   const projectId = meta.projectId;
   if (!projectId) return;
@@ -169,8 +168,7 @@ async function activateUpload(
       // Public uploads go into review queue; private-circle uploads
       // jump straight to ready.
       status: project.visibility === "public" ? "pending_review" : "ready",
-      adminReviewStatus:
-        project.visibility === "public" ? "pending_review" : null,
+      adminReviewStatus: project.visibility === "public" ? "pending_review" : null,
       published: project.visibility !== "public",
       publishedAt: project.visibility !== "public" ? new Date() : null,
     },
@@ -181,10 +179,7 @@ async function activateUpload(
 // Pay-per-view
 // ---------------------------------------------------------------------------
 
-async function activatePpv(
-  obj: Record<string, unknown>,
-  paymentId: string
-): Promise<void> {
+async function activatePpv(obj: Record<string, unknown>, paymentId: string): Promise<void> {
   const meta = obj.metadata as Record<string, string>;
   const userId = meta.userId;
   const projectId = meta.projectId;
@@ -211,10 +206,7 @@ async function activatePpv(
 // Tip (creator donation)
 // ---------------------------------------------------------------------------
 
-async function activateTip(
-  obj: Record<string, unknown>,
-  paymentId: string
-): Promise<void> {
+async function activateTip(obj: Record<string, unknown>, paymentId: string): Promise<void> {
   const meta = obj.metadata as Record<string, string>;
   const fromUserId = meta.fromUserId;
   const toUserId = meta.toUserId;
@@ -262,9 +254,7 @@ export interface OneShotCheckoutParams {
  * Create a `mode=payment` Checkout Session. Works for any one-shot payment;
  * the webhook dispatcher reads `metadata.kind` to activate the right entity.
  */
-export async function createOneShotCheckout(
-  params: OneShotCheckoutParams
-): Promise<string> {
+export async function createOneShotCheckout(params: OneShotCheckoutParams): Promise<string> {
   const body: Record<string, string> = {
     mode: "payment",
     success_url: params.successUrl,

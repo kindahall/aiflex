@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { requireUser, AuthError } from "@/lib/auth";
+import { requireAdmin, AuthError } from "@/lib/auth";
+import { getTrustedClientIp } from "@/lib/client-ip";
 import { prisma } from "@/lib/prisma";
 import { notify } from "@/lib/notify";
 import { logAdminAction } from "@/lib/audit";
+import { swallowAndReport } from "@/lib/observability";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,15 +19,9 @@ interface ReviewBody {
  * Approve  → status "ready", visible in catalogue
  * Reject   → status "rejected" + credit issued to user.credits (refund as store credit)
  */
-export async function POST(
-  req: Request,
-  { params }: { params: Promise<{ filmId: string }> }
-) {
+export async function POST(req: Request, { params }: { params: Promise<{ filmId: string }> }) {
   try {
-    const user = await requireUser();
-    if (user.role !== "admin") {
-      return NextResponse.json({ error: "Interdit" }, { status: 403 });
-    }
+    const user = await requireAdmin();
 
     const { filmId } = await params;
     const body = (await req.json()) as ReviewBody;
@@ -63,7 +59,8 @@ export async function POST(
       );
     }
 
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+    const trustedIp = getTrustedClientIp(req);
+    const ip = trustedIp !== "anonymous" ? trustedIp : undefined;
 
     if (body.decision === "approve") {
       await prisma.project.update({
@@ -85,14 +82,14 @@ export async function POST(
         targetType: "film",
         metadata: { note: body.note },
         ipAddress: ip,
-      }).catch(() => {});
+      }).catch(swallowAndReport("admin/review/[filmId]/log"));
       notify({
         userId: film.ownerId,
         kind: "video-ready",
         message: `✅ Ton film "${film.title ?? ""}" est en ligne.`,
         href: `/watch/${filmId}`,
         projectId: filmId,
-      }).catch(() => {});
+      }).catch(swallowAndReport("admin/review/[filmId]/log"));
       return NextResponse.json({ ok: true, decision: "approve" });
     }
 
@@ -109,7 +106,7 @@ export async function POST(
           adminReviewNote: body.note ?? null,
           status: "rejected",
           creditIssued: creditAmount > 0 ? true : film.creditIssued,
-          creditAmount: creditAmount > 0 ? creditAmount : film.amountPaid ?? 0,
+          creditAmount: creditAmount > 0 ? creditAmount : (film.amountPaid ?? 0),
         },
       }),
       ...(creditAmount > 0
@@ -129,7 +126,7 @@ export async function POST(
       targetType: "film",
       metadata: { note: body.note, creditAmount },
       ipAddress: ip,
-    }).catch(() => {});
+    }).catch(swallowAndReport("admin/review/[filmId]/log"));
 
     notify({
       userId: film.ownerId,
@@ -137,7 +134,7 @@ export async function POST(
       message: `❌ Ton film "${film.title ?? ""}" a été refusé : ${body.note ?? "non conforme"}. Un avoir a été crédité sur ton compte.`,
       href: `/account`,
       projectId: filmId,
-    }).catch(() => {});
+    }).catch(swallowAndReport("admin/review/[filmId]/log"));
 
     return NextResponse.json({ ok: true, decision: "reject", creditAmount });
   } catch (err) {

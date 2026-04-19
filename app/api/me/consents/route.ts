@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
+import { getTrustedClientIp } from "@/lib/client-ip";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -56,8 +57,15 @@ export async function POST(req: Request) {
     if (!body.version || typeof body.version !== "string") {
       return NextResponse.json({ error: "Version requise" }, { status: 400 });
     }
+    if (!/^[A-Za-z0-9._-]{1,32}$/.test(body.version)) {
+      return NextResponse.json({ error: "Version invalide" }, { status: 400 });
+    }
 
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+    // getTrustedClientIp ignores client-supplied X-Forwarded-For unless the
+    // trusted proxy secret is set — prevents attackers from poisoning the
+    // RGPD Art. 7 audit trail with spoofed IPs.
+    const trustedIp = getTrustedClientIp(req);
+    const ipAddress = trustedIp && trustedIp !== "anonymous" ? trustedIp : null;
 
     const record = await prisma.consentRecord.create({
       data: {
@@ -65,7 +73,7 @@ export async function POST(req: Request) {
         type: body.type,
         version: body.version,
         accepted: !!body.accepted,
-        ipAddress: ip,
+        ipAddress,
       },
     });
 

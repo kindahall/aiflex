@@ -8,14 +8,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function publicId(token: string): string {
-  return createHash("sha256").update(token).digest("hex").slice(0, 16);
+  // Full 256-bit — match the listing route. Must agree on both ends so
+  // the DELETE can look up the session by its public id.
+  return createHash("sha256").update(token).digest("hex");
 }
 
 /** DELETE /api/me/sessions/[id] — revoke a specific session by its public id. */
-export async function DELETE(
-  _req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const me = await requireUser();
     const { id } = await params;
@@ -23,10 +22,7 @@ export async function DELETE(
     const sessions = await listSessionsByUser(me.id);
     const target = sessions.find((s) => publicId(s.token) === id);
     if (!target) {
-      return NextResponse.json(
-        { error: "Session introuvable." },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Session introuvable." }, { status: 404 });
     }
 
     const cookieStore = await cookies();

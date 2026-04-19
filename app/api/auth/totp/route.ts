@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
 import { findUserById, updateUser } from "@/lib/server-db";
-import { generateSecret, generateBackupCodes, buildOtpAuthUri } from "@/lib/totp";
+import {
+  generateSecret,
+  generateBackupCodes,
+  buildOtpAuthUri,
+  hashBackupCode,
+  verifyBackupCode,
+} from "@/lib/totp";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,10 +44,10 @@ export async function POST() {
     const backupCodes = generateBackupCodes();
     const otpAuthUri = buildOtpAuthUri(secret, user.email);
 
-    // Save secret (not yet enabled — user must verify first)
+    // Store only hashes — the plaintext list is shown once to the user.
     await updateUser(user.id, {
       totpSecret: secret,
-      totpBackupCodes: backupCodes,
+      totpBackupCodes: backupCodes.map(hashBackupCode),
       totpEnabled: false,
     });
 
@@ -64,10 +70,7 @@ export async function DELETE(req: Request) {
     const body = (await req.json()) as { code: string };
 
     if (!body.code) {
-      return NextResponse.json(
-        { error: "Code TOTP requis pour désactiver" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Code TOTP requis pour désactiver" }, { status: 400 });
     }
 
     const record = await findUserById(user.id);
@@ -79,8 +82,10 @@ export async function DELETE(req: Request) {
     const { verifyTOTP } = await import("@/lib/totp");
     const valid = await verifyTOTP(record.totpSecret!, body.code);
 
-    // Also check backup codes
-    const isBackup = !valid && record.totpBackupCodes?.includes(body.code);
+    // Also check backup codes (hashed or legacy plaintext)
+    const isBackup =
+      !valid &&
+      (record.totpBackupCodes ?? []).some((stored) => verifyBackupCode(stored, body.code));
 
     if (!valid && !isBackup) {
       return NextResponse.json({ error: "Code invalide" }, { status: 403 });

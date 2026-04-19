@@ -34,35 +34,51 @@ export interface SearchHit {
   href: string;
 }
 
+// Minimal in-memory cache for the listPublicProjects() array. Keeps search
+// from hammering the DB on every keystroke. 30s TTL — short enough that
+// freshly-published films show up quickly.
+let projectsCache: { items: Project[]; fetchedAt: number } | null = null;
+const PROJECTS_TTL_MS = 30_000;
+async function cachedPublicProjects(): Promise<Project[]> {
+  const now = Date.now();
+  if (projectsCache && now - projectsCache.fetchedAt < PROJECTS_TTL_MS) {
+    return projectsCache.items;
+  }
+  const items = await listPublicProjects();
+  projectsCache = { items, fetchedAt: now };
+  return items;
+}
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const q = (url.searchParams.get("q") || "").trim().toLowerCase();
+  const rawQ = url.searchParams.get("q") || "";
+  // Cap query length — a 10kB substring probe is never useful and costs us
+  // O(N × len) per request.
+  if (rawQ.length > 200) {
+    return NextResponse.json({ error: "Requête trop longue" }, { status: 400 });
+  }
+  const q = rawQ.trim().toLowerCase();
   const genre = (url.searchParams.get("genre") || "").trim() as Genre | "";
-  const source = (url.searchParams.get("source") || "all") as
-    | "all"
-    | "community"
-    | "catalog";
+  const source = (url.searchParams.get("source") || "all") as "all" | "community" | "catalog";
   const sort = (url.searchParams.get("sort") || "pertinence") as
     | "pertinence"
     | "recent"
     | "populaire";
 
   const limitParam = Number(url.searchParams.get("limit"));
-  const limit = Number.isFinite(limitParam) && limitParam > 0
-    ? Math.min(MAX_LIMIT, Math.floor(limitParam))
-    : DEFAULT_LIMIT;
+  const limit =
+    Number.isFinite(limitParam) && limitParam > 0
+      ? Math.min(MAX_LIMIT, Math.floor(limitParam))
+      : DEFAULT_LIMIT;
   const offsetParam = Number(url.searchParams.get("offset"));
-  const offset = Number.isFinite(offsetParam) && offsetParam > 0
-    ? Math.floor(offsetParam)
-    : 0;
+  const offset = Number.isFinite(offsetParam) && offsetParam > 0 ? Math.floor(offsetParam) : 0;
 
   const hits: SearchHit[] = [];
 
   if (source !== "community") {
     for (const c of CATALOG) {
       if (genre && c.genre !== genre) continue;
-      if (q && !matches(q, [c.title, c.tagline, c.description, c.author]))
-        continue;
+      if (q && !matches(q, [c.title, c.tagline, c.description, c.author])) continue;
       hits.push({
         id: c.id,
         source: "catalog",
@@ -81,7 +97,7 @@ export async function GET(req: Request) {
   }
 
   if (source !== "catalog") {
-    const projects = await listPublicProjects();
+    const projects = await cachedPublicProjects();
     // Filter first (cheap), then batch-load owners for matches only.
     const matched: Project[] = [];
     for (const p of projects) {
@@ -140,9 +156,7 @@ function projectToHit(p: Project, author: string): SearchHit {
     description: p.concept?.synopsis || "",
     genre: p.genre,
     coverUrl:
-      p.coverUrl ||
-      p.scenes?.[0]?.imageUrl ||
-      `https://picsum.photos/seed/feed-${p.id}/1280/720`,
+      p.coverUrl || p.scenes?.[0]?.imageUrl || `https://picsum.photos/seed/feed-${p.id}/1280/720`,
     author,
     durationMin: Math.max(1, Math.round((sceneCount * 8) / 60)),
     year: new Date(p.publishedAt || p.updatedAt).getFullYear(),

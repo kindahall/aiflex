@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
-import { createReport } from "@/lib/server-db";
+import { createReport, countReportsByReporter } from "@/lib/server-db";
 import { quarantineProjectForCsam } from "@/lib/reports";
 import { captureError } from "@/lib/observability";
 
@@ -26,9 +26,22 @@ export async function POST(req: Request) {
     const body = (await req.json()) as Body;
 
     if (!body.targetType || !body.targetId || !body.reason) {
+      return NextResponse.json({ error: "Raison et contenu à signaler requis." }, { status: 400 });
+    }
+
+    // Per-user daily cap — the middleware already rate-limits by IP,
+    // but a signed-in abuser behind a rotating IP pool could still
+    // DOS the admin queue. Max 20 reports / 24h per account.
+    const DAILY_CAP = 20;
+    const since = Date.now() - 24 * 60 * 60 * 1000;
+    const dailyCount = await countReportsByReporter(user.id, since);
+    if (dailyCount >= DAILY_CAP) {
       return NextResponse.json(
-        { error: "Raison et contenu à signaler requis." },
-        { status: 400 }
+        {
+          error:
+            "Quota quotidien de signalements atteint. Réessaie dans 24h ou contacte le support.",
+        },
+        { status: 429 }
       );
     }
 
@@ -42,7 +55,9 @@ export async function POST(req: Request) {
     });
 
     // eslint-disable-next-line no-console
-    console.log(`[report] Nouveau signalement ${report.id} — ${body.reason} → ${body.targetType}/${body.targetId}`);
+    console.log(
+      `[report] Nouveau signalement ${report.id} — ${body.reason} → ${body.targetType}/${body.targetId}`
+    );
 
     // V8 §19.5 — CSAM zero-tolerance: hide the project immediately, alert
     // Sentry/Discord (via captureError on a dedicated tag), and let the admin

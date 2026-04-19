@@ -118,13 +118,29 @@ describe("isPastCurfew", () => {
     expect(await mod.isPastCurfew("p_1", earlyMorning)).toBe(true);
   });
 
-  it("respects browser tz offset", async () => {
+  it("ignores client tz offset for child profiles (browser spoofing)", async () => {
     prismaMock.profile.findUnique.mockResolvedValue({
       isChild: true,
       curfewHour: 21,
     });
-    // 19:00 UTC + offset +120min (e.g. CEST) → local 21:00 → curfew
+    // 19:00 UTC — client claims +120min (CEST → local 21:00) but child
+    // profiles ignore browser offset, so UTC stays the anchor → not curfew.
     const utc = new Date(Date.UTC(2026, 3, 14, 19, 0, 0));
-    expect(await mod.isPastCurfew("p_1", utc, 120)).toBe(true);
+    expect(await mod.isPastCurfew("p_1", utc, 120)).toBe(false);
+  });
+
+  it("honors PARENTAL_CURFEW_TZ_OFFSET_MINUTES for child profiles", async () => {
+    const prev = process.env.PARENTAL_CURFEW_TZ_OFFSET_MINUTES;
+    process.env.PARENTAL_CURFEW_TZ_OFFSET_MINUTES = "120";
+    vi.resetModules();
+    const fresh = await import("@/lib/parental");
+    prismaMock.profile.findUnique.mockResolvedValue({
+      isChild: true,
+      curfewHour: 21,
+    });
+    const utc = new Date(Date.UTC(2026, 3, 14, 19, 0, 0));
+    expect(await fresh.isPastCurfew("p_1", utc, 0)).toBe(true);
+    if (prev === undefined) delete process.env.PARENTAL_CURFEW_TZ_OFFSET_MINUTES;
+    else process.env.PARENTAL_CURFEW_TZ_OFFSET_MINUTES = prev;
   });
 });

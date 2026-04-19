@@ -1,1 +1,30 @@
+#!/usr/bin/env bash
+# AIflex pre-commit hook
+# Runs lint-staged + a dumb secret scanner over staged content. Blocks
+# the commit on any obvious credential leak.
+
+set -e
+
+# ---------------------------------------------------------------------------
+# 1) Format + lint staged files
+# ---------------------------------------------------------------------------
 npx lint-staged
+
+# ---------------------------------------------------------------------------
+# 2) Secret scan over staged diff
+# ---------------------------------------------------------------------------
+# Patterns are deliberately broad — false positives are fine here, false
+# negatives (a leaked key reaching git history) are not.
+PATTERNS='(AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|sk_live_[A-Za-z0-9]{20,}|sk_test_[A-Za-z0-9]{20,}|fal_[A-Za-z0-9]{20,}|AIFLEX_TOKEN_SECRET=|STRIPE_SECRET_KEY=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=|FAL_KEY=|YOTI_API_KEY=|-----BEGIN (RSA|EC|DSA|OPENSSH) PRIVATE KEY-----)'
+
+if git diff --cached --name-only -z | xargs -0 -I{} -- git diff --cached -- "{}" \
+    | grep -E "$PATTERNS" >/dev/null 2>&1; then
+  echo ""
+  echo "❌  Secret-looking content in staged diff. Aborting commit."
+  echo "    Run 'git diff --cached' to inspect; redact then re-stage."
+  echo "    If this is a genuine false positive, bypass with"
+  echo "    HUSKY_SKIP_SECRET_SCAN=1 git commit."
+  if [ "${HUSKY_SKIP_SECRET_SCAN:-}" != "1" ]; then
+    exit 1
+  fi
+fi

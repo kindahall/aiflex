@@ -19,21 +19,47 @@ export interface StorageProvider {
 // ---------------------------------------------------------------------------
 
 class LocalStorage implements StorageProvider {
-  private baseDir = path.join(process.cwd(), "public", "uploads");
+  // In production this class is never selected (S3Storage takes over when
+  // S3_BUCKET is set). In dev we write to `private-uploads/` so files are
+  // NOT served statically by Next.js at `/uploads/*` — the caller must go
+  // through a signed URL endpoint that enforces auth + expiry.
+  //
+  // For backwards compat with demo flows, callers whose key starts with
+  // `public/` go to the public directory.
+  private privateDir = path.join(process.cwd(), ".storage", "private");
+  private publicDir = path.join(process.cwd(), "public", "uploads");
 
-  async upload(key: string, body: Buffer, _contentType: string): Promise<string> {
-    const filePath = path.join(this.baseDir, key);
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(filePath, body);
-    return `/uploads/${key}`;
+  private isPublicKey(key: string): boolean {
+    return key.startsWith("public/");
   }
 
-  async getSignedUrl(key: string): Promise<string> {
-    return `/uploads/${key}`;
+  private pathFor(key: string): string {
+    return this.isPublicKey(key)
+      ? path.join(this.publicDir, key.slice("public/".length))
+      : path.join(this.privateDir, key);
+  }
+
+  async upload(key: string, body: Buffer, _contentType: string): Promise<string> {
+    const filePath = this.pathFor(key);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, body);
+    if (this.isPublicKey(key)) {
+      return `/uploads/${key.slice("public/".length)}`;
+    }
+    // Private: expose through the authenticated signed-url endpoint.
+    return this.getSignedUrl(key);
+  }
+
+  async getSignedUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+    if (this.isPublicKey(key)) {
+      return `/uploads/${key.slice("public/".length)}`;
+    }
+    const { signLocalUrl } = await import("./local-storage-sign");
+    return signLocalUrl(key, expiresInSeconds);
   }
 
   async delete(key: string): Promise<void> {
-    const filePath = path.join(this.baseDir, key);
+    const filePath = this.pathFor(key);
     try {
       await fs.unlink(filePath);
     } catch {
@@ -42,7 +68,7 @@ class LocalStorage implements StorageProvider {
   }
 
   async exists(key: string): Promise<boolean> {
-    const filePath = path.join(this.baseDir, key);
+    const filePath = this.pathFor(key);
     try {
       await fs.access(filePath);
       return true;
@@ -51,6 +77,8 @@ class LocalStorage implements StorageProvider {
     }
   }
 }
+
+export const LOCAL_PRIVATE_DIR = path.join(process.cwd(), ".storage", "private");
 
 // ---------------------------------------------------------------------------
 // AWS Signature V4 helpers (no SDK)
@@ -77,7 +105,10 @@ function getSignatureKey(
 }
 
 function toAmzDate(d: Date): { amzDate: string; dateStamp: string } {
-  const iso = d.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const iso = d
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z");
   return { amzDate: iso, dateStamp: iso.slice(0, 8) };
 }
 
@@ -110,9 +141,7 @@ function signRequest(opts: SignedRequestInit): Record<string, string> {
   const signedHeaderKeys = Object.keys(headers).sort();
   const signedHeaders = signedHeaderKeys.join(";");
 
-  const canonicalHeaders = signedHeaderKeys
-    .map((k) => `${k}:${headers[k]}`)
-    .join("\n") + "\n";
+  const canonicalHeaders = signedHeaderKeys.map((k) => `${k}:${headers[k]}`).join("\n") + "\n";
 
   const canonicalQueryString = [...parsedUrl.searchParams]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -137,9 +166,7 @@ function signRequest(opts: SignedRequestInit): Record<string, string> {
   ].join("\n");
 
   const signingKey = getSignatureKey(opts.secretAccessKey, dateStamp, opts.region, service);
-  const signature = createHmac("sha256", signingKey)
-    .update(stringToSign, "utf8")
-    .digest("hex");
+  const signature = createHmac("sha256", signingKey).update(stringToSign, "utf8").digest("hex");
 
   const authHeader =
     `AWS4-HMAC-SHA256 Credential=${opts.accessKeyId}/${credentialScope}, ` +
@@ -202,9 +229,7 @@ function buildPresignedUrl(opts: {
   ].join("\n");
 
   const signingKey = getSignatureKey(opts.secretAccessKey, dateStamp, opts.region, service);
-  const signature = createHmac("sha256", signingKey)
-    .update(stringToSign, "utf8")
-    .digest("hex");
+  const signature = createHmac("sha256", signingKey).update(stringToSign, "utf8").digest("hex");
 
   return `${parsedBase.origin}${parsedBase.pathname}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
 }
@@ -344,17 +369,12 @@ export const storagePaths = {
   filmClip: (id: string, jobId: string) => `films/${id}/clips/${jobId}.mp4`,
   episodeOutput: (id: string) => `episodes/${id}/output.mp4`,
   episodeThumbnail: (id: string) => `episodes/${id}/thumbnail.jpg`,
-  characterPreview: (jobId: string, i: number) =>
-    `previews/${jobId}/char-${i}.webp`,
-  characterReference: (characterId: string) =>
-    `characters/${characterId}/reference.webp`,
+  characterPreview: (jobId: string, i: number) => `previews/${jobId}/char-${i}.webp`,
+  characterReference: (characterId: string) => `characters/${characterId}/reference.webp`,
   uploadedFilm: (id: string) => `uploads/${id}/original.mp4`,
-  subtitle: (projectId: string, lang: string) =>
-    `subtitles/${projectId}/${lang}.vtt`,
-  dubAudio: (projectId: string, lang: string) =>
-    `dubs/${projectId}/${lang}.mp3`,
-  adCreative: (campaignId: string, ext: string) =>
-    `ads/${campaignId}/creative.${ext}`,
+  subtitle: (projectId: string, lang: string) => `subtitles/${projectId}/${lang}.vtt`,
+  dubAudio: (projectId: string, lang: string) => `dubs/${projectId}/${lang}.mp3`,
+  adCreative: (campaignId: string, ext: string) => `ads/${campaignId}/creative.${ext}`,
   backup: (stamp: string) => `backups/${stamp}.sql.gpg`,
 };
 
@@ -380,31 +400,44 @@ export async function uploadFromPath(
  * Fetch a remote URL (e.g. Replicate/Flux image, Seedance clip MP4) and
  * re-upload it to our storage at `key`. Useful because model providers
  * routinely garbage-collect their output URLs after 24-72h.
+ *
+ * SSRF defense: the URL is validated against an allowlist of provider
+ * hosts before we hit the network. That blocks exfil attempts against
+ * internal IPs (169.254.169.254 cloud metadata, 127.0.0.1, RFC 1918…)
+ * even if a user-controlled URL ever reaches this path.
  */
 export async function uploadFromUrl(
   sourceUrl: string,
   key: string,
   fallbackContentType = "application/octet-stream"
 ): Promise<string> {
-  const resp = await fetch(sourceUrl);
+  const { assertSafeOutboundUrl } = await import("./safe-fetch");
+  await assertSafeOutboundUrl(sourceUrl);
+
+  const resp = await fetch(sourceUrl, {
+    redirect: "manual",
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!resp.ok) {
-    throw new Error(
-      `uploadFromUrl: fetch failed (${resp.status}) for ${sourceUrl}`
-    );
+    throw new Error(`uploadFromUrl: fetch failed (${resp.status}) for ${sourceUrl}`);
   }
   const contentType = resp.headers.get("content-type") || fallbackContentType;
+  const MAX_BYTES = 500 * 1024 * 1024; // 500MB ceiling
+  const lenHeader = Number(resp.headers.get("content-length") || 0);
+  if (lenHeader > MAX_BYTES) {
+    throw new Error("uploadFromUrl: remote file exceeds 500MB limit");
+  }
   const buf = Buffer.from(await resp.arrayBuffer());
+  if (buf.length > MAX_BYTES) {
+    throw new Error("uploadFromUrl: remote file exceeds 500MB limit");
+  }
   return getStorage().upload(key, buf, contentType);
 }
 
 /**
  * Upload a Buffer directly. Thin wrapper preserved for V7 API compat.
  */
-export function uploadBuffer(
-  buffer: Buffer,
-  key: string,
-  contentType: string
-): Promise<string> {
+export function uploadBuffer(buffer: Buffer, key: string, contentType: string): Promise<string> {
   return getStorage().upload(key, buffer, contentType);
 }
 

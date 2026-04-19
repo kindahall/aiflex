@@ -32,7 +32,7 @@ function ensureConfigured() {
 
 export interface FluxImageParams {
   prompt: string;
-  numImages?: number;     // default 1
+  numImages?: number; // default 1
   aspectRatio?: "1:1" | "2:3" | "3:2" | "16:9" | "9:16";
   seed?: number;
 }
@@ -48,23 +48,27 @@ const DEFAULT_MODEL = "fal-ai/flux/schnell";
  * Generate a single batch of images via Flux Schnell and return the raw
  * external URLs. Prefer `generateCharacterImages` when you want persistence.
  */
-export async function generateFluxImages(
-  params: FluxImageParams
-): Promise<FluxImageResult[]> {
+export async function generateFluxImages(params: FluxImageParams): Promise<FluxImageResult[]> {
   ensureConfigured();
   const model = process.env.FLUX_MODEL || DEFAULT_MODEL;
 
-  const result = await fal.subscribe(model, {
-    input: {
-      prompt: `Cinematic, high-quality, detailed portrait. ${params.prompt}`,
-      num_images: params.numImages ?? 1,
-      image_size: aspectToImageSize(params.aspectRatio ?? "2:3"),
-      ...(params.seed !== undefined ? { seed: params.seed } : {}),
-      enable_safety_checker: true,
-      output_format: "webp",
-    },
-    logs: false,
-  });
+  const { withOutboundLimit } = await import("./outbound-limit");
+  const { withCircuitBreaker } = await import("./circuit-breaker");
+  const result = await withCircuitBreaker("fal", () =>
+    withOutboundLimit("fal", () =>
+      fal.subscribe(model, {
+        input: {
+          prompt: `Cinematic, high-quality, detailed portrait. ${params.prompt}`,
+          num_images: params.numImages ?? 1,
+          image_size: aspectToImageSize(params.aspectRatio ?? "2:3"),
+          ...(params.seed !== undefined ? { seed: params.seed } : {}),
+          enable_safety_checker: true,
+          output_format: "webp",
+        },
+        logs: false,
+      })
+    )
+  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data: any = (result as any)?.data ?? result;
@@ -97,11 +101,7 @@ export async function generateCharacterImages(
 
   return Promise.all(
     batch.map((img, i) =>
-      uploadFromUrl(
-        img.url,
-        storagePaths.characterPreview(jobId, i),
-        "image/webp"
-      )
+      uploadFromUrl(img.url, storagePaths.characterPreview(jobId, i), "image/webp")
     )
   );
 }
@@ -110,48 +110,32 @@ export async function generateCharacterImages(
  * Single-thumbnail generation: used for AI-suggested film thumbnails (V8 §23.3).
  * Aspect ratio 16:9 for catalogue cards.
  */
-export async function generateThumbnail(
-  prompt: string,
-  projectId: string
-): Promise<string> {
+export async function generateThumbnail(prompt: string, projectId: string): Promise<string> {
   const [img] = await generateFluxImages({
     prompt: `Movie poster, cinematic thumbnail. ${prompt}`,
     numImages: 1,
     aspectRatio: "16:9",
   });
-  return uploadFromUrl(
-    img.url,
-    storagePaths.filmThumbnail(projectId),
-    "image/webp"
-  );
+  return uploadFromUrl(img.url, storagePaths.filmThumbnail(projectId), "image/webp");
 }
 
 /**
  * Store a character reference image permanently (V10.4 — continuité perso).
  */
-export async function saveCharacterReference(
-  prompt: string,
-  characterId: string
-): Promise<string> {
+export async function saveCharacterReference(prompt: string, characterId: string): Promise<string> {
   const [img] = await generateFluxImages({
     prompt,
     numImages: 1,
     aspectRatio: "2:3",
   });
-  return uploadFromUrl(
-    img.url,
-    storagePaths.characterReference(characterId),
-    "image/webp"
-  );
+  return uploadFromUrl(img.url, storagePaths.characterReference(characterId), "image/webp");
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function aspectToImageSize(
-  ar: "1:1" | "2:3" | "3:2" | "16:9" | "9:16"
-): string {
+function aspectToImageSize(ar: "1:1" | "2:3" | "3:2" | "16:9" | "9:16"): string {
   // Flux Schnell accepts named sizes. Map our aspect ratios to the closest
   // supported preset — fal.ai will error on unrecognized values.
   switch (ar) {

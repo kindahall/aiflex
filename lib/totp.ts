@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash, timingSafeEqual } from "node:crypto";
 
 /**
  * Minimal TOTP (RFC 6238) implementation — no external dependencies.
@@ -8,6 +9,40 @@ import "server-only";
 const DIGITS = 6;
 const PERIOD = 30; // seconds
 const ALGORITHM = "SHA-1";
+
+const BACKUP_CODE_HASH_PREFIX = "sha256$";
+
+/** Hash a backup code for at-rest storage. Plaintext is only shown once. */
+export function hashBackupCode(code: string): string {
+  return BACKUP_CODE_HASH_PREFIX + createHash("sha256").update(code.trim()).digest("hex");
+}
+
+export function isHashedBackupCode(value: string): boolean {
+  return typeof value === "string" && value.startsWith(BACKUP_CODE_HASH_PREFIX);
+}
+
+function ctStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  try {
+    return timingSafeEqual(ab, bb);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify a candidate backup code against a stored entry. Accepts both
+ * hashed (new) and plaintext (legacy) stored values so already-enrolled
+ * users are not locked out during migration.
+ */
+export function verifyBackupCode(stored: string, candidate: string): boolean {
+  if (isHashedBackupCode(stored)) {
+    return ctStringEqual(stored, hashBackupCode(candidate));
+  }
+  return ctStringEqual(stored, candidate.trim());
+}
 
 /** Generate a random base32-encoded secret. */
 export function generateSecret(): string {
@@ -29,21 +64,14 @@ export function generateBackupCodes(): string[] {
 }
 
 /** Build an otpauth:// URI for QR code generation. */
-export function buildOtpAuthUri(
-  secret: string,
-  email: string,
-  issuer = "AIflex"
-): string {
+export function buildOtpAuthUri(secret: string, email: string, issuer = "AIflex"): string {
   const encodedIssuer = encodeURIComponent(issuer);
   const encodedEmail = encodeURIComponent(email);
   return `otpauth://totp/${encodedIssuer}:${encodedEmail}?secret=${secret}&issuer=${encodedIssuer}&algorithm=${ALGORITHM}&digits=${DIGITS}&period=${PERIOD}`;
 }
 
 /** Verify a TOTP code against a secret. Allows ±1 period drift. */
-export async function verifyTOTP(
-  secret: string,
-  code: string
-): Promise<boolean> {
+export async function verifyTOTP(secret: string, code: string): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);
   for (let offset = -1; offset <= 1; offset++) {
     const counter = Math.floor((now + offset * PERIOD) / PERIOD);
@@ -53,10 +81,7 @@ export async function verifyTOTP(
   return false;
 }
 
-async function generateTOTPCode(
-  secret: string,
-  counter: number
-): Promise<string> {
+async function generateTOTPCode(secret: string, counter: number): Promise<string> {
   const key = base32Decode(secret);
   const counterBuf = new ArrayBuffer(8);
   const view = new DataView(counterBuf);
@@ -69,9 +94,7 @@ async function generateTOTPCode(
     false,
     ["sign"]
   );
-  const hmac = new Uint8Array(
-    await crypto.subtle.sign("HMAC", cryptoKey, counterBuf)
-  );
+  const hmac = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, counterBuf));
 
   // Dynamic truncation (RFC 4226)
   const offset = hmac[hmac.length - 1] & 0x0f;

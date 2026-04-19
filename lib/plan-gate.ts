@@ -10,15 +10,20 @@ import type { User, UserRecord } from "./types";
 const FEATURE_PLANS: Record<string, PlanId> = {
   "face-swap": "pro",
   "lip-sync": "pro",
-  "messages": "free",
-  "profiles": "free",
-  "collaboration": "pro",
+  messages: "free",
+  profiles: "free",
+  collaboration: "pro",
   "tips-send": "free",
   "tips-receive": "free",
-  "parental": "free",
-  "totp": "free",
+  parental: "free",
+  totp: "free",
   "multi-lang-tts": "pro",
-  "music": "pro",
+  music: "pro",
+  // Series + sequels are expensive agent pipelines — gate to Studio
+  // until the dedicated one-shot checkout flow ships. This replaces
+  // the "skipped for now" TODOs in /api/series/create and /api/sequel.
+  "series-create": "studio",
+  "sequel-create": "studio",
 };
 
 const PLAN_RANK: Record<PlanId, number> = {
@@ -35,10 +40,7 @@ const PLAN_RANK: Record<PlanId, number> = {
 export async function checkPlanAccess(
   userId: string,
   feature: string
-): Promise<
-  | { allowed: true }
-  | { allowed: false; requiredPlan: PlanId; currentPlan: PlanId }
-> {
+): Promise<{ allowed: true } | { allowed: false; requiredPlan: PlanId; currentPlan: PlanId }> {
   const minPlan = FEATURE_PLANS[feature] || "free";
   if (minPlan === "free") return { allowed: true };
 

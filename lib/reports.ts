@@ -17,7 +17,7 @@ import { notify } from "./notify";
  */
 
 export const REPORT_SEVERITY: Record<string, number> = {
-  csam: 0,           // most severe, top of queue
+  csam: 0, // most severe, top of queue
   copyright: 1,
   hate: 2,
   inappropriate: 3,
@@ -28,21 +28,47 @@ export const REPORT_SEVERITY: Record<string, number> = {
 export type ReportAction = "removed" | "warned" | "suspended" | "none";
 
 /**
+ * Quarantine threshold: one report is enough to *flag* a project for admin
+ * review, but hiding from the public catalogue requires corroboration from
+ * at least N distinct reporters. Without this, a single malicious user can
+ * take any public film offline by sending a forged CSAM report.
+ *
+ * Admins can always force-hide from /admin/reports — this is only about
+ * automatic pre-review action.
+ */
+const CSAM_QUARANTINE_MIN_REPORTERS = 2;
+
+/**
  * Quarantine a project on CSAM signalement: hide from public catalogue
- * immediately. Called from the report-create path before admin review.
+ * immediately IF enough distinct reporters have flagged it. Always flips
+ * adminReviewStatus so the admin queue surfaces the case.
  */
 export async function quarantineProjectForCsam(projectId: string): Promise<void> {
-  await prisma.project
-    .update({
+  try {
+    const distinct = await prisma.report.findMany({
+      where: {
+        targetType: "project",
+        targetId: projectId,
+        reason: "csam",
+      },
+      select: { reporterId: true },
+    });
+    const uniqueReporters = new Set(distinct.map((r) => r.reporterId)).size;
+
+    const shouldHide = uniqueReporters >= CSAM_QUARANTINE_MIN_REPORTERS;
+
+    await prisma.project.update({
       where: { id: projectId },
       data: {
-        published: false,
+        // Flag for review on every CSAM report, regardless of count.
         adminReviewStatus: "pending_review",
+        // Hide only after corroboration to prevent single-user DOS.
+        ...(shouldHide ? { published: false } : {}),
       },
-    })
-    .catch(() => {
-      // Project may not exist (report could target a comment) — don't crash
     });
+  } catch {
+    // Project may not exist (report could target a comment) — don't crash
+  }
 }
 
 /**
@@ -160,10 +186,7 @@ async function applyWarn(targetType: string, targetId: string): Promise<void> {
   }).catch(() => {});
 }
 
-async function applySuspend(
-  targetType: string,
-  targetId: string
-): Promise<void> {
+async function applySuspend(targetType: string, targetId: string): Promise<void> {
   let userId: string | null = null;
   if (targetType === "user") {
     userId = targetId;

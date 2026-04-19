@@ -50,6 +50,8 @@ export interface LogAdminActionInput {
   targetType: AdminTargetType;
   metadata?: Record<string, unknown>;
   ipAddress?: string;
+  /** UA string of the admin's browser, truncated to 400 chars. */
+  userAgent?: string;
 }
 
 /**
@@ -57,9 +59,7 @@ export interface LogAdminActionInput {
  * the admin action itself, but they ARE logged to stderr so Sentry can
  * surface them.
  */
-export async function logAdminAction(
-  input: LogAdminActionInput
-): Promise<void> {
+export async function logAdminAction(input: LogAdminActionInput): Promise<void> {
   try {
     await prisma.adminAuditLog.create({
       data: {
@@ -69,6 +69,7 @@ export async function logAdminAction(
         targetType: input.targetType,
         metadata: (input.metadata ?? null) as unknown as object,
         ipAddress: input.ipAddress,
+        userAgent: input.userAgent?.slice(0, 400),
       },
     });
   } catch (err) {

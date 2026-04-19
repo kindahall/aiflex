@@ -43,7 +43,16 @@ export async function getOrCreateReferralLink(userId: string) {
  * successful signup, reading the cookie value. Silent no-op if code
  * doesn't exist — we don't want a typo'd referral to block signup.
  */
+// Accept only URL-safe base64url chars, 1-20 length. Anything else is
+// probably a path-injection or open-redirect attempt.
+const CODE_RE = /^[A-Za-z0-9_-]{1,20}$/;
+
+export function isValidReferralCode(code: string): boolean {
+  return typeof code === "string" && CODE_RE.test(code);
+}
+
 export async function recordReferralSignup(code: string): Promise<string | null> {
+  if (!isValidReferralCode(code)) return null;
   const link = await prisma.referralLink.findUnique({
     where: { code },
     select: { userId: true },
@@ -78,10 +87,7 @@ export async function recordReferralConversion(
  */
 export async function getReferralStatus(userId: string) {
   const link = await getOrCreateReferralLink(userId);
-  const appUrl =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.APP_URL ||
-    "https://aiflex.app";
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "https://aiflex.app";
   return {
     code: link.code,
     shareUrl: `${appUrl}/?ref=${link.code}`,

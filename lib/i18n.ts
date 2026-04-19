@@ -22,9 +22,7 @@ const DEFAULT_LOCALE: Locale = "fr";
  */
 export function getLocale(): Locale {
   if (typeof document !== "undefined") {
-    const match = document.cookie
-      .split("; ")
-      .find((c) => c.startsWith(`${COOKIE_NAME}=`));
+    const match = document.cookie.split("; ").find((c) => c.startsWith(`${COOKIE_NAME}=`));
     const val = match?.split("=")[1];
     if (val && val in dictionaries) return val as Locale;
   }
@@ -50,6 +48,32 @@ export function t(key: string, locale?: Locale, vars?: Record<string, string>): 
     }
   }
   return result;
+}
+
+/** True when a real translation exists for `key` (active or default locale). */
+export function hasTranslation(key: string, locale?: Locale): boolean {
+  const loc = locale || getLocale();
+  return Boolean(dictionaries[loc]?.[key] || dictionaries[DEFAULT_LOCALE]?.[key]);
+}
+
+/**
+ * Translate with explicit fallback. Use this instead of
+ * `t("x") || "fallback"` — `t()` returns the key itself on miss, which
+ * is truthy, so the `||` fallback is unreachable.
+ */
+export function tOr(
+  key: string,
+  fallback: string,
+  locale?: Locale,
+  vars?: Record<string, string>
+): string {
+  if (!hasTranslation(key, locale)) {
+    if (!vars) return fallback;
+    let out = fallback;
+    for (const [k, v] of Object.entries(vars)) out = out.replace(`{${k}}`, v);
+    return out;
+  }
+  return t(key, locale, vars);
 }
 
 /**
@@ -81,6 +105,12 @@ export function useTranslation() {
     [locale]
   );
 
+  const translateOr = useCallback(
+    (key: string, fallback: string, vars?: Record<string, string>) =>
+      tOr(key, fallback, locale, vars),
+    [locale]
+  );
+
   const changeLocale = useCallback((newLocale: Locale) => {
     setLocale(newLocale);
     setLocaleState(newLocale);
@@ -88,5 +118,5 @@ export function useTranslation() {
     document.documentElement.lang = newLocale;
   }, []);
 
-  return { locale, t: translate, setLocale: changeLocale };
+  return { locale, t: translate, tOr: translateOr, setLocale: changeLocale };
 }

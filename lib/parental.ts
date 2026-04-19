@@ -62,10 +62,7 @@ export function verifyPin(pin: string, stored: string): boolean {
 export async function shouldChallengePin(
   currentProfileId: string | null,
   targetProfileId: string
-): Promise<
-  | { required: false }
-  | { required: true; profileId: string }
-> {
+): Promise<{ required: false } | { required: true; profileId: string }> {
   if (!currentProfileId) return { required: false };
   const [current, target] = await Promise.all([
     prisma.profile.findUnique({
@@ -90,13 +87,21 @@ export async function shouldChallengePin(
 // Curfew enforcement
 // ---------------------------------------------------------------------------
 
+function serverTzOffsetMinutes(): number {
+  const raw = Number(process.env.PARENTAL_CURFEW_TZ_OFFSET_MINUTES);
+  if (!Number.isFinite(raw)) return 0;
+  return Math.abs(raw) <= 14 * 60 ? raw : 0;
+}
+
 /**
  * True if the Kids profile is past its curfew hour at `now`. Returns
  * `false` when no curfew set or profile isn't a Kids profile.
  *
- * Curfew is a single integer (0-23) interpreted in the user's local time
- * zone — when we don't know the TZ we use UTC as a conservative default
- * (caller can pass `tzOffsetMinutes` from the browser).
+ * Curfew is a single integer (0-23). Child profiles ignore any client-
+ * supplied `tzOffsetMinutes` (a minor could set UTC+14 from their browser
+ * to defeat a UTC+2 curfew) — the offset comes from
+ * `PARENTAL_CURFEW_TZ_OFFSET_MINUTES` on the server. Non-child calls
+ * keep the best-effort browser offset for UX.
  */
 export async function isPastCurfew(
   profileId: string,
@@ -109,11 +114,11 @@ export async function isPastCurfew(
   });
   if (!profile?.isChild || profile.curfewHour == null) return false;
 
-  // Apply the browser-reported offset to get the user's local hour.
-  const local = new Date(now.getTime() + tzOffsetMinutes * 60_000);
+  const offset = serverTzOffsetMinutes();
+  const browserOffset = Math.abs(tzOffsetMinutes) <= 14 * 60 ? tzOffsetMinutes : 0;
+  const effective = profile.isChild ? offset : browserOffset;
+  const local = new Date(now.getTime() + effective * 60_000);
   const hour = local.getUTCHours();
-  // Curfew "21" means content blocked from 21:00 to 06:00. Reasonable
-  // default: blocked between curfewHour and 06:00 the next morning.
   const curfew = profile.curfewHour;
   if (curfew === 0) return false;
   return hour >= curfew || hour < 6;

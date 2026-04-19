@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "./prisma";
+import { assertSafeOutboundUrl } from "./safe-fetch";
 import { uploadFromUrl, storagePaths } from "./storage";
 
 /**
@@ -47,9 +48,7 @@ export interface ExtractEmbeddingResult {
  * Extract a 512-dim facial embedding from a reference image. Returns
  * `{ skipped: true }` when Replicate isn't configured.
  */
-export async function extractFacialEmbedding(
-  imageUrl: string
-): Promise<ExtractEmbeddingResult> {
+export async function extractFacialEmbedding(imageUrl: string): Promise<ExtractEmbeddingResult> {
   const apiKey = process.env.REPLICATE_API_TOKEN;
   if (!apiKey) {
     return { skipped: true, reason: "REPLICATE_API_TOKEN not set" };
@@ -58,6 +57,15 @@ export async function extractFacialEmbedding(
     return {
       skipped: true,
       reason: "REPLICATE_INSTANT_ID_MODEL not set (pin a model version)",
+    };
+  }
+
+  try {
+    await assertSafeOutboundUrl(imageUrl);
+  } catch (err) {
+    return {
+      skipped: true,
+      reason: `image URL refused: ${err instanceof Error ? err.message : "unknown"}`,
     };
   }
 
@@ -103,8 +111,12 @@ export async function extractFacialEmbedding(
       const out = Array.isArray(p.output)
         ? p.output
         : (p.output?.embedding ?? p.output?.face_embedding);
-      if (Array.isArray(out) && out.length >= 256) {
-        return { skipped: false, embedding: out.slice(0, 512) };
+      if (
+        Array.isArray(out) &&
+        out.length >= 256 &&
+        out.slice(0, 512).every((n: unknown) => typeof n === "number" && Number.isFinite(n))
+      ) {
+        return { skipped: false, embedding: out.slice(0, 512) as number[] };
       }
       return {
         skipped: true,

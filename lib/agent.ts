@@ -2,6 +2,7 @@ import "server-only";
 import { prisma } from "./prisma";
 import { callNarrativeJSON } from "./ai-client";
 import { moderateAndLog } from "./moderation";
+import { log } from "./logger";
 import {
   buildAgentInstructions,
   buildSequelAgentInstructions,
@@ -126,10 +127,7 @@ export async function orchestrateGeneration(jobId: string): Promise<void> {
       where: { id: jobId },
       select: { status: true },
     });
-    if (
-      next &&
-      (next.status === "scenario_ready" || next.status === "generating")
-    ) {
+    if (next && (next.status === "scenario_ready" || next.status === "generating")) {
       await orchestrateGeneration(jobId);
     }
   } catch (err) {
@@ -258,8 +256,7 @@ async function step_moderateAndAnalyze(jobId: string): Promise<void> {
     await notify({
       userId: job.userId,
       kind: "system",
-      message:
-        "Tes personnages sont prêts à être validés. Ouvre AiFlex pour les voir.",
+      message: "Tes personnages sont prêts à être validés. Ouvre AiFlex pour les voir.",
       href: `/agent/validate/${jobId}`,
     });
     return;
@@ -279,7 +276,10 @@ async function step_generatePreviews(
       out[char.id] = urls;
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn(`[agent] preview failed for ${char.id}:`, err);
+      log.warn("agent.preview failed", {
+        characterId: char.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
       out[char.id] = [];
     }
   }
@@ -290,7 +290,8 @@ async function step_submitClips(jobId: string): Promise<void> {
   const job = await prisma.generationJob.findUnique({ where: { id: jobId } });
   if (!job) return;
   const form = job.formData as unknown as AgentFormData;
-  const scenario = (job.validatedData as unknown as AgentScenarioData) ||
+  const scenario =
+    (job.validatedData as unknown as AgentScenarioData) ||
     (job.scenarioData as unknown as AgentScenarioData);
   if (!scenario?.scenes?.length) {
     throw new Error("Pas de scénario à générer — le scénario n'a pas été préparé.");
@@ -318,7 +319,10 @@ async function step_submitClips(jobId: string): Promise<void> {
       });
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn(`[agent] submit failed for ${scene.id}:`, err);
+      log.warn("agent.submit failed", {
+        sceneId: scene.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
       updatedScenes.push({ ...scene, seedanceStatus: "ERROR" });
     }
   }
@@ -371,20 +375,11 @@ async function step_pollClips(jobId: string): Promise<void> {
         // as-is to save the ffmpeg pass.
         const needsWatermark = job.visibility === "public";
         const persisted = needsWatermark
-          ? await persistVideoWithAiWatermark(
-              result.videoUrl,
-              job.projectId || jobId,
-              scene.id,
-              {
-                model: scene.seedanceModel,
-                prompt: scene.visualPrompt,
-              }
-            )
-          : await persistVideo(
-              result.videoUrl,
-              job.projectId || jobId,
-              scene.id
-            );
+          ? await persistVideoWithAiWatermark(result.videoUrl, job.projectId || jobId, scene.id, {
+              model: scene.seedanceModel,
+              prompt: scene.visualPrompt,
+            })
+          : await persistVideo(result.videoUrl, job.projectId || jobId, scene.id);
         updatedScenes.push({
           ...scene,
           seedanceStatus: status,
@@ -400,7 +395,10 @@ async function step_pollClips(jobId: string): Promise<void> {
       }
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn(`[agent] poll failed for ${scene.id}:`, err);
+      log.warn("agent.poll failed", {
+        sceneId: scene.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
       allDone = false;
       updatedScenes.push(scene);
     }
@@ -512,12 +510,12 @@ async function step_finalize(jobId: string): Promise<void> {
     // Auto-transcribe + translate (V8 §22.6). Fire-and-forget: no OpenAI key
     // means we silently skip. Dubbing is creator-opt-in only.
     import("./subtitles-whisper")
-      .then(({ generateSubtitlesForProject }) =>
-        generateSubtitlesForProject(projectId!)
-      )
+      .then(({ generateSubtitlesForProject }) => generateSubtitlesForProject(projectId!))
       .catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn("[agent] subtitle generation failed:", err);
+        log.warn("agent.subtitles failed", {
+          err: err instanceof Error ? err.message : String(err),
+        });
       });
 
     // V8 §23.3 — generate an AI-suggested thumbnail from the synopsis when
@@ -534,7 +532,9 @@ async function step_finalize(jobId: string): Promise<void> {
       )
       .catch((err) => {
         // eslint-disable-next-line no-console
-        console.warn("[agent] thumbnail generation failed:", err);
+        log.warn("agent.thumbnail failed", {
+          err: err instanceof Error ? err.message : String(err),
+        });
       });
 
     // V8 §24.3 — notify followers of the publishing creator. Fan-out is
@@ -559,7 +559,9 @@ async function step_finalize(jobId: string): Promise<void> {
         }
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn("[agent] follower notification fan-out failed:", err);
+        log.warn("agent.notifyFollowers failed", {
+          err: err instanceof Error ? err.message : String(err),
+        });
       }
     })();
   }
@@ -601,6 +603,7 @@ export async function cronAdvanceAllJobs(): Promise<{
   launched: number;
   failed: number;
   autoApproved: number;
+  reaped: number;
 }> {
   let advanced = 0;
   let launched = 0;
@@ -669,7 +672,39 @@ export async function cronAdvanceAllJobs(): Promise<{
     }
   }
 
-  return { advanced, launched, failed, autoApproved };
+  // 4. Reap orphaned jobs. The orchestrator runs detached
+  // (`orchestrateGeneration(id).catch(...)`) — if the Node process crashes
+  // mid-generation, the row stays in `pending` or `generating` forever
+  // and the user sees a permanent spinner. Anything stuck for more than
+  // STALE_JOB_AFTER_MS without progress is force-failed so the UI
+  // surfaces a real error and the user can retry.
+  let reaped = 0;
+  const STALE_JOB_AFTER_MS = 60 * 60 * 1000; // 1h
+  const cutoff = new Date(Date.now() - STALE_JOB_AFTER_MS);
+  const orphans = await prisma.generationJob.findMany({
+    where: {
+      status: { in: ["pending", "generating"] },
+      updatedAt: { lt: cutoff },
+    },
+    select: { id: true },
+    take: 100,
+  });
+  for (const { id } of orphans) {
+    try {
+      await prisma.generationJob.update({
+        where: { id },
+        data: {
+          status: "error",
+          errorMessage: "Job orphelin (timeout > 1h sans progression) — relance recommandée.",
+        },
+      });
+      reaped++;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return { advanced, launched, failed, autoApproved, reaped };
 }
 
 // ---------------------------------------------------------------------------

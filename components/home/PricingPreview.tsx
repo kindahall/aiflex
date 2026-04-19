@@ -60,17 +60,15 @@ const TIERS: Tier[] = [
 ];
 
 export function PricingPreview() {
-  const { t } = useTranslation();
-  const heading = t("home.pricing.heading") || "Un prix par niveau de créativité";
-  const subtitle =
-    t("home.pricing.subtitle") ||
-    "Commence gratuitement. Upgrade quand tes spectateurs arrivent.";
+  const { tOr } = useTranslation();
+  const heading = tOr("home.pricing.heading", "Un prix par niveau de créativité");
+  const subtitle = tOr(
+    "home.pricing.subtitle",
+    "Commence gratuitement. Upgrade quand tes spectateurs arrivent."
+  );
 
   return (
-    <section
-      className="mx-auto my-24 max-w-6xl px-6"
-      aria-labelledby="pricing-heading"
-    >
+    <section className="mx-auto my-24 max-w-6xl px-6" aria-labelledby="pricing-heading">
       <div className="mb-10 text-center">
         <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-flex-border bg-flex-panel px-3 py-1 text-[10px] font-bold uppercase tracking-[0.25em] text-flex-accent">
           ✦ tarifs

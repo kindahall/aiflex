@@ -59,17 +59,40 @@ describe("REPORT_SEVERITY ordering", () => {
 });
 
 describe("quarantineProjectForCsam", () => {
-  it("hides the project (published=false, pending_review)", async () => {
+  it("only flags for review on a single reporter (single-user DOS prevention)", async () => {
+    // Only one CSAM report from one reporter — never enough to hide.
+    prismaMock.report.findMany.mockResolvedValueOnce([{ reporterId: "u_a" }]);
     prismaMock.project.update.mockResolvedValueOnce({});
     await mod.quarantineProjectForCsam("p_1");
     const call = prismaMock.project.update.mock.calls[0]?.[0] as
-      | { where: { id: string }; data: { published: boolean; adminReviewStatus: string } }
+      | {
+          where: { id: string };
+          data: { published?: boolean; adminReviewStatus: string };
+        }
+      | undefined;
+    expect(call?.data.published).toBeUndefined();
+    expect(call?.data.adminReviewStatus).toBe("pending_review");
+  });
+
+  it("hides the project once 2 distinct reporters corroborate", async () => {
+    prismaMock.report.findMany.mockResolvedValueOnce([
+      { reporterId: "u_a" },
+      { reporterId: "u_b" },
+    ]);
+    prismaMock.project.update.mockResolvedValueOnce({});
+    await mod.quarantineProjectForCsam("p_1");
+    const call = prismaMock.project.update.mock.calls[0]?.[0] as
+      | {
+          where: { id: string };
+          data: { published?: boolean; adminReviewStatus: string };
+        }
       | undefined;
     expect(call?.data.published).toBe(false);
     expect(call?.data.adminReviewStatus).toBe("pending_review");
   });
 
   it("never throws when the target doesn't exist", async () => {
+    prismaMock.report.findMany.mockResolvedValueOnce([]);
     prismaMock.project.update.mockRejectedValueOnce(new Error("not found"));
     await expect(mod.quarantineProjectForCsam("missing")).resolves.toBeUndefined();
   });
@@ -205,9 +228,7 @@ describe("applyReportDecision", () => {
       | undefined;
     expect(reportUpdate?.data.status).toBe("dismissed");
     expect(reportUpdate?.data.action).toBe("none");
-    expect(auditMock).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "dismiss_report" })
-    );
+    expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({ action: "dismiss_report" }));
   });
 });
 

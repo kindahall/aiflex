@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { runMonthlyPayouts, previousMonthKey } from "@/lib/payouts";
 import { verifyCronRequest } from "@/lib/cron-auth";
+import { isKilled } from "@/lib/kill-switch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +14,9 @@ export const revalidate = 0;
 export async function POST(req: Request) {
   if (!verifyCronRequest(req).ok) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (isKilled("payouts")) {
+    return NextResponse.json({ skipped: true, reason: "FEATURE_PAYOUTS_KILL=1" }, { status: 200 });
   }
 
   let month = previousMonthKey();

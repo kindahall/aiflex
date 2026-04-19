@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "./prisma";
+import { assertSafeOutboundUrl } from "./safe-fetch";
 
 /**
  * Lip-sync via Sync Labs (sync.so) — V8 §28.2.
@@ -38,26 +39,42 @@ export async function submitLipSync(params: {
     return { skipped: true, reason: "SYNC_LABS_API_KEY not configured" };
   }
 
-  const res = await fetch(`${API_BASE}/generate`, {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "lipsync-2",
-      input: [
-        { type: "video", url: params.videoUrl },
-        { type: "audio", url: params.audioUrl },
-      ],
-      options: { output_format: "mp4" },
-    }),
-  });
+  try {
+    await assertSafeOutboundUrl(params.videoUrl);
+    await assertSafeOutboundUrl(params.audioUrl);
+  } catch (err) {
+    return {
+      skipped: true,
+      reason: `URL refused: ${err instanceof Error ? err.message : "unknown"}`,
+    };
+  }
+
+  const { timedFetch } = await import("./safe-outbound");
+  const { withOutboundLimit } = await import("./outbound-limit");
+  const { withCircuitBreaker } = await import("./circuit-breaker");
+  const res = await withCircuitBreaker("syncLabs", () =>
+    withOutboundLimit("syncLabs", () =>
+      timedFetch(`${API_BASE}/generate`, {
+        method: "POST",
+        headers: {
+          "x-api-key": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "lipsync-2",
+          input: [
+            { type: "video", url: params.videoUrl },
+            { type: "audio", url: params.audioUrl },
+          ],
+          options: { output_format: "mp4" },
+        }),
+        timeoutMs: 30_000,
+      })
+    )
+  );
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `Sync Labs submit failed (${res.status}): ${text.slice(0, 400)}`
-    );
+    throw new Error(`Sync Labs submit failed (${res.status}): ${text.slice(0, 400)}`);
   }
   const data = (await res.json()) as { id: string };
   return { skipped: false, jobId: data.id };
@@ -71,9 +88,15 @@ export interface LipSyncStatus {
 export async function checkLipSync(jobId: string): Promise<LipSyncStatus> {
   const apiKey = process.env.SYNC_LABS_API_KEY;
   if (!apiKey) return { status: "UNKNOWN" };
-  const res = await fetch(`${API_BASE}/generate/${jobId}`, {
-    headers: { "x-api-key": apiKey },
-  });
+  const { timedFetch } = await import("./safe-outbound");
+  const { withOutboundLimit } = await import("./outbound-limit");
+  const res = await withOutboundLimit("syncLabs", () =>
+    timedFetch(`${API_BASE}/generate/${jobId}`, {
+      headers: { "x-api-key": apiKey },
+      timeoutMs: 10_000,
+      retry: { attempts: 2, baseMs: 500 },
+    })
+  );
   if (!res.ok) return { status: "UNKNOWN" };
   const data = (await res.json()) as {
     status: string;
@@ -129,9 +152,9 @@ export async function applyLipSyncToScene(params: {
         where: { id: params.projectId },
         select: { composition: true },
       });
-      const composition = (project?.composition ?? null) as
-        | { scenes: Array<{ clipUrl?: string | null }> }
-        | null;
+      const composition = (project?.composition ?? null) as {
+        scenes: Array<{ clipUrl?: string | null }>;
+      } | null;
       if (composition?.scenes?.[params.sceneIndex]) {
         composition.scenes[params.sceneIndex].clipUrl = persisted;
         await prisma.project.update({

@@ -22,6 +22,9 @@ vi.mock("@/lib/storage", () => ({
   uploadFromUrl: vi.fn(async (url: string) => url),
   storagePaths: { characterReference: (id: string) => `characters/${id}/ref.webp` },
 }));
+vi.mock("@/lib/safe-fetch", () => ({
+  assertSafeOutboundUrl: vi.fn(async (u: string) => new URL(u)),
+}));
 
 const ENV_BACKUP = process.env.REPLICATE_API_TOKEN;
 const MODEL_BACKUP = process.env.REPLICATE_INSTANT_ID_MODEL;
@@ -86,15 +89,15 @@ describe("findSimilarPublicCharacters", () => {
       { id: "c_1", name: "Lara", creatorId: "u_1", distance: 0.12 },
       { id: "c_2", name: "Other", creatorId: "u_2", distance: 0.18 },
     ]);
-    const matches = await mod.findSimilarPublicCharacters(
-      Array(512).fill(0.1),
-      { limit: 3, maxDistance: 0.2 }
-    );
+    const matches = await mod.findSimilarPublicCharacters(Array(512).fill(0.1), {
+      limit: 3,
+      maxDistance: 0.2,
+    });
     expect(matches.length).toBe(2);
     expect(matches[0].name).toBe("Lara");
     const args = prismaMock.$queryRawUnsafe.mock.calls[0];
     expect(args?.[2]).toBe(0.2); // maxDistance threshold
-    expect(args?.[3]).toBe(3);   // limit
+    expect(args?.[3]).toBe(3); // limit
   });
 
   it("returns empty array on raw-query failure (pgvector missing)", async () => {

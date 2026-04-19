@@ -4,11 +4,8 @@ import { AuthError, requireUser } from "@/lib/auth";
 import { moderatePromptSafe } from "@/lib/moderation";
 import { persistVideo } from "@/lib/video-persist";
 import { createJob } from "@/lib/job-queue";
-import {
-  getCurrentUsage,
-  getSettings,
-  incrementVideoUsage,
-} from "@/lib/server-db";
+import { assertSafeOutboundUrl } from "@/lib/safe-fetch";
+import { getCurrentUsage, getSettings, incrementVideoUsage } from "@/lib/server-db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,10 +34,26 @@ export async function POST(req: Request) {
     const user = await requireUser();
     const body = (await req.json()) as Body;
     if (!body.prompt?.trim()) {
-      return NextResponse.json(
-        { error: "Prompt vidéo manquant" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Prompt vidéo manquant" }, { status: 400 });
+    }
+
+    // Validate any user-provided URLs against the SSRF allowlist BEFORE
+    // forwarding them to the upstream model. Providers re-fetch these
+    // server-side, which is indistinguishable from us fetching them
+    // ourselves for the purposes of SSRF / data-exfiltration.
+    try {
+      if (body.imageUrl) await assertSafeOutboundUrl(body.imageUrl);
+      if (body.referenceImageUrls?.length) {
+        if (body.referenceImageUrls.length > 8) {
+          return NextResponse.json({ error: "Max 8 images de référence" }, { status: 400 });
+        }
+        for (const u of body.referenceImageUrls) {
+          await assertSafeOutboundUrl(u);
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "URL refusée";
+      return NextResponse.json({ error: `URL refusée: ${msg}` }, { status: 400 });
     }
 
     if (!(await hasSeedanceKey())) {
@@ -143,8 +156,7 @@ export async function POST(req: Request) {
 
     // Only count successful generations against the quota — failures are
     // not the user's fault and shouldn't burn their budget.
-    const newCount =
-      user.role === "admin" ? null : await incrementVideoUsage(user.id, 1);
+    const newCount = user.role === "admin" ? null : await incrementVideoUsage(user.id, 1);
 
     return NextResponse.json({
       videoUrl,

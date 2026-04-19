@@ -164,9 +164,15 @@ const fr: Record<string, string> = {
   "home.thrills": "Frissons & Action",
   "home.ctaBadge": "Studio IA — Nouveau",
   "home.ctaTitle": "Transforme ton idée en film.",
-  "home.ctaDescription": "Décris une histoire en quelques phrases. AIflex construit le concept, écrit le scénario, découpe les scènes et génère chaque plan vidéo automatiquement grâce à l'IA.",
+  "home.ctaDescription":
+    "Décris une histoire en quelques phrases. AIflex construit le concept, écrit le scénario, découpe les scènes et génère chaque plan vidéo automatiquement grâce à l'IA.",
   "home.ctaPrimary": "Lancer le studio →",
   "home.ctaSecondary": "Créer un compte",
+  "home.testimonials.heading": "Ils créent déjà avec AIflex",
+  "home.testimonials.subtitle":
+    "Des créateurs ont déjà transformé une idée en film publié et monétisé.",
+  "home.pricing.heading": "Un prix par niveau de créativité",
+  "home.pricing.subtitle": "Commence gratuitement. Upgrade quand tes spectateurs arrivent.",
 
   // Notifications
   "notif.title": "Notifications",
@@ -179,9 +185,11 @@ const fr: Record<string, string> = {
   "footer.platform": "Plateforme",
   "footer.community": "Communauté",
   "footer.legal": "Légal",
-  "footer.tagline": "La plateforme où chaque spectateur peut devenir réalisateur grâce à l'intelligence artificielle.",
+  "footer.tagline":
+    "La plateforme où chaque spectateur peut devenir réalisateur grâce à l'intelligence artificielle.",
   "footer.rights": "Tous droits réservés.",
-  "footer.aiDisclosure": "Tous les films générés par AIflex sont identifiés comme contenus IA conformément au AI Act européen.",
+  "footer.aiDisclosure":
+    "Tous les films générés par AIflex sont identifiés comme contenus IA conformément au AI Act européen.",
   "footer.terms": "Conditions d'utilisation",
   "footer.privacy": "Politique de confidentialité",
   "footer.aiPolicy": "Divulgation IA",
@@ -200,13 +208,15 @@ const fr: Record<string, string> = {
   // Email verification
   "verify.required": "Vérification requise",
   "verify.title": "Confirme ton adresse email",
-  "verify.message": "On t'a envoyé un lien à {email}. Tu pourras créer des films librement, mais la publication est bloquée tant que ton adresse n'est pas vérifiée.",
+  "verify.message":
+    "On t'a envoyé un lien à {email}. Tu pourras créer des films librement, mais la publication est bloquée tant que ton adresse n'est pas vérifiée.",
   "verify.resend": "Renvoyer le lien",
   "verify.sending": "Envoi…",
 
   // SEO / Meta
   "meta.title": "AIflex — Streame. Crée. Deviens réalisateur.",
-  "meta.description": "La première plateforme de streaming où chaque spectateur peut devenir créateur. Transforme une idée en film entier grâce à l'intelligence artificielle.",
+  "meta.description":
+    "La première plateforme de streaming où chaque spectateur peut devenir créateur. Transforme une idée en film entier grâce à l'intelligence artificielle.",
 };
 
 export default fr;

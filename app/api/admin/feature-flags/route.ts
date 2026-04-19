@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
+import { AuthError, requireAdmin } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { invalidateFeatureFlagsCache, type FeatureFlagKey } from "@/lib/feature-flags";
 import { logAdminAction } from "@/lib/audit";
+import { swallowAndReport } from "@/lib/observability";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,10 +18,7 @@ const KEYS: readonly FeatureFlagKey[] = [
 
 export async function GET() {
   try {
-    const user = await requireUser();
-    if (user.role !== "admin") {
-      return NextResponse.json({ error: "Interdit" }, { status: 403 });
-    }
+    await requireAdmin();
     const settings = await prisma.platformSettings.findUnique({
       where: { id: "singleton" },
       select: Object.fromEntries(KEYS.map((k) => [k, true])) as Record<FeatureFlagKey, true>,
@@ -40,10 +38,7 @@ interface PatchBody {
 
 export async function PATCH(req: Request) {
   try {
-    const user = await requireUser();
-    if (user.role !== "admin") {
-      return NextResponse.json({ error: "Interdit" }, { status: 403 });
-    }
+    const user = await requireAdmin();
     const body = (await req.json()) as PatchBody;
     if (!body.flags || typeof body.flags !== "object") {
       return NextResponse.json({ error: "flags manquants" }, { status: 400 });
@@ -71,7 +66,7 @@ export async function PATCH(req: Request) {
       targetId: "singleton",
       targetType: "settings",
       metadata: { flags: data },
-    }).catch(() => {});
+    }).catch(swallowAndReport("admin/feature-flags/log"));
 
     return NextResponse.json({ ok: true, flags: data });
   } catch (err) {

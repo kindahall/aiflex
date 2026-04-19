@@ -31,10 +31,7 @@ export interface ErrorContext {
   [k: string]: unknown;
 }
 
-export async function captureError(
-  err: unknown,
-  context: ErrorContext = {}
-): Promise<void> {
+export async function captureError(err: unknown, context: ErrorContext = {}): Promise<void> {
   // eslint-disable-next-line no-console
   console.error(`[${context.route ?? "error"}]`, err, context);
 
@@ -54,6 +51,22 @@ export async function captureError(
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Returns a `.catch` handler for fire-and-forget background work
+ * (notifications, audit logs, analytics pings) that reports the failure
+ * to Sentry instead of swallowing it silently. Meant to replace
+ * `.catch(() => {})` at call sites where the main response has already
+ * been sent but a failure still needs to be visible.
+ *
+ *   notify({...}).catch(swallowAndReport("notify.comment"));
+ */
+export function swallowAndReport(scope: string, extra: ErrorContext = {}): (err: unknown) => void {
+  return (err) => {
+    // Best-effort — never throws, never delays the main code path.
+    void captureError(err, { route: scope, ...extra });
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +111,11 @@ async function getPostHog(): Promise<unknown> {
     const mod = await import("posthog-node").catch(() => null);
     if (!mod) return null;
     const host = process.env.NEXT_PUBLIC_POSTHOG_HOST || "https://eu.posthog.com";
-    const PH = (mod as unknown as {
-      PostHog: new (k: string, o: { host: string }) => unknown;
-    }).PostHog;
+    const PH = (
+      mod as unknown as {
+        PostHog: new (k: string, o: { host: string }) => unknown;
+      }
+    ).PostHog;
     posthogClient = new PH(key, { host });
     return posthogClient;
   } catch {

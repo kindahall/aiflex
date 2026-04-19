@@ -4,6 +4,8 @@ import { hashPassword } from "@/lib/password";
 import { startSession } from "@/lib/auth";
 import { signToken } from "@/lib/tokens";
 import { publicUrl, sendEmail } from "@/lib/email";
+import { validatePasswordStrength } from "@/lib/password-policy";
+import { isKilled } from "@/lib/kill-switch";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,28 +18,23 @@ interface Body {
 
 export async function POST(req: Request) {
   try {
+    if (isKilled("signups")) {
+      return NextResponse.json({ error: "Inscriptions temporairement fermées." }, { status: 503 });
+    }
     const body = (await req.json()) as Body;
     const email = body.email?.trim().toLowerCase();
     const password = body.password ?? "";
     const name = body.name?.trim() || email?.split("@")[0] || "";
 
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return NextResponse.json(
-        { error: "Email invalide" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Email invalide" }, { status: 400 });
     }
-    if (password.length < 6) {
-      return NextResponse.json(
-        { error: "Le mot de passe doit faire au moins 6 caractères" },
-        { status: 400 }
-      );
+    const pwErr = validatePasswordStrength(password);
+    if (pwErr) {
+      return NextResponse.json({ error: pwErr }, { status: 400 });
     }
     if (!name) {
-      return NextResponse.json(
-        { error: "Nom invalide" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Nom invalide" }, { status: 400 });
     }
 
     const settings = await getSettings();
@@ -50,10 +47,7 @@ export async function POST(req: Request) {
 
     const existing = await findUserByEmail(email);
     if (existing) {
-      return NextResponse.json(
-        { error: "Un compte existe déjà avec cet email" },
-        { status: 409 }
-      );
+      return NextResponse.json({ error: "Un compte existe déjà avec cet email" }, { status: 409 });
     }
 
     const user = await createUser({

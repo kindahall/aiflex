@@ -1,9 +1,11 @@
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { AuthError, getCurrentUserRecord } from "@/lib/auth";
-import { findUserByEmail, updateUser } from "@/lib/server-db";
+import { AuthError, getCurrentUserRecord, SESSION_COOKIE } from "@/lib/auth";
+import { deleteSessionsForUserExcept, findUserByEmail, updateUser } from "@/lib/server-db";
 import { verifyPassword } from "@/lib/password";
 import { signToken } from "@/lib/tokens";
 import { publicUrl, sendEmail } from "@/lib/email";
+import { authLimiter, checkPerUser, RateLimitError } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,42 +26,41 @@ export async function POST(req: Request) {
     const me = await getCurrentUserRecord();
     if (!me) throw new AuthError("Authentification requise", 401);
 
+    // Per-user throttle: 3 email changes per hour max — stolen sessions
+    // can't spam verification mails or pollute the DB with attempts.
+    try {
+      await checkPerUser(authLimiter, 3, me.id, "email-change");
+    } catch (rl) {
+      if (rl instanceof RateLimitError) {
+        return NextResponse.json(
+          { error: "Trop de changements d'email. Réessaie dans une heure." },
+          { status: 429 }
+        );
+      }
+      throw rl;
+    }
+
     const body = (await req.json()) as Body;
     const newEmail = (body.newEmail || "").trim().toLowerCase();
 
     if (!EMAIL_RE.test(newEmail)) {
-      return NextResponse.json(
-        { error: "Adresse email invalide." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Adresse email invalide." }, { status: 400 });
     }
     if (newEmail === me.email) {
-      return NextResponse.json(
-        { error: "C'est déjà ton adresse actuelle." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "C'est déjà ton adresse actuelle." }, { status: 400 });
     }
     if (!body.currentPassword) {
-      return NextResponse.json(
-        { error: "Mot de passe requis pour confirmer." },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Mot de passe requis pour confirmer." }, { status: 400 });
     }
 
     const ok = await verifyPassword(me.passwordHash, body.currentPassword);
     if (!ok) {
-      return NextResponse.json(
-        { error: "Mot de passe incorrect." },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Mot de passe incorrect." }, { status: 401 });
     }
 
     const existing = await findUserByEmail(newEmail);
     if (existing) {
-      return NextResponse.json(
-        { error: "Cette adresse est déjà utilisée." },
-        { status: 409 }
-      );
+      return NextResponse.json({ error: "Cette adresse est déjà utilisée." }, { status: 409 });
     }
 
     await updateUser(me.id, {
@@ -67,6 +68,13 @@ export async function POST(req: Request) {
       emailVerified: false,
       emailVerifiedAt: undefined,
     });
+
+    // Invalidate every other session — email is a recovery factor, so a
+    // change mid-session must cut off any stolen cookies the same way
+    // change-password does.
+    const cookieStore = await cookies();
+    const currentToken = cookieStore.get(SESSION_COOKIE)?.value || "";
+    await deleteSessionsForUserExcept(me.id, currentToken);
 
     const token = signToken(me.id, "email-verification", 60 * 60 * 24);
     const url = publicUrl(`/verify-email?token=${token}`);

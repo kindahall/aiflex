@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isKilled } from "@/lib/kill-switch";
 import { AuthError, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { createOneShotCheckout } from "@/lib/stripe-oneshot";
@@ -31,6 +32,9 @@ interface Body {
  */
 export async function POST(req: Request) {
   try {
+    if (isKilled("tips")) {
+      return NextResponse.json({ error: "Tips temporairement désactivés." }, { status: 503 });
+    }
     const user = await requireUser();
     const body = (await req.json()) as Body;
 
@@ -38,10 +42,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Champs requis" }, { status: 400 });
     }
     if (body.toUserId === user.id) {
-      return NextResponse.json(
-        { error: "Tu ne peux pas te tipper toi-même" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Tu ne peux pas te tipper toi-même" }, { status: 400 });
     }
     const amount = Math.floor(body.amountCents);
     const isPreset = ALLOWED_AMOUNTS.has(amount);
@@ -58,16 +59,11 @@ export async function POST(req: Request) {
       select: { id: true, name: true, suspended: true },
     });
     if (!receiver || receiver.suspended) {
-      return NextResponse.json(
-        { error: "Créateur introuvable ou suspendu" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Créateur introuvable ou suspendu" }, { status: 404 });
     }
 
     const appUrl =
-      process.env.NEXT_PUBLIC_APP_URL ||
-      process.env.APP_URL ||
-      "http://localhost:3000";
+      process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "http://localhost:3000";
     const successPath = body.projectId
       ? `/watch/${body.projectId}?tip=success`
       : `/u/${body.toUserId}?tip=success`;
@@ -88,7 +84,11 @@ export async function POST(req: Request) {
         toUserId: body.toUserId,
         amountCents: String(amount),
         ...(body.message
-          ? { message: body.message.slice(0, 200) }
+          ? {
+              // Strip control characters + angle brackets to neutralize
+              // any XSS attempt on the consumer side (notification, email).
+              message: body.message.replace(/[\u0000-\u001f\u007f<>]/g, "").slice(0, 200),
+            }
           : {}),
       },
     });

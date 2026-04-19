@@ -56,19 +56,13 @@ export async function PATCH(req: Request) {
     // --- Models ---
     if (typeof body.narrativeModel === "string") {
       if (!findNarrativeModel(body.narrativeModel)) {
-        return NextResponse.json(
-          { error: "Modèle narratif inconnu" },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "Modèle narratif inconnu" }, { status: 400 });
       }
       patch.narrativeModel = body.narrativeModel;
     }
     if (typeof body.videoModel === "string") {
       if (!findVideoModel(body.videoModel)) {
-        return NextResponse.json(
-          { error: "Modèle vidéo inconnu" },
-          { status: 400 }
-        );
+        return NextResponse.json({ error: "Modèle vidéo inconnu" }, { status: 400 });
       }
       patch.videoModel = body.videoModel;
     }
@@ -112,16 +106,32 @@ export async function PATCH(req: Request) {
 
     // API keys are no longer writable via this endpoint — they live in env vars only.
 
-    // --- Site content ---
+    // --- Site content — strict allowlist of editable keys. Without this
+    // an admin (or a compromised admin session) could scribble arbitrary
+    // keys into the stored JSON and pollute downstream consumers.
+    const SITE_CONTENT_KEYS = new Set<keyof SiteContent>([
+      "heroBadge",
+      "ctaBadge",
+      "ctaTitle",
+      "ctaDescription",
+      "ctaPrimaryLabel",
+      "ctaSecondaryLabel",
+      "studioEyebrow",
+      "studioTitle",
+      "studioDescription",
+      "siteTitle",
+      "siteDescription",
+    ]);
     if (body.siteContent && typeof body.siteContent === "object") {
       const current = (await getSettings()).siteContent || {};
-      const next = { ...current };
+      const next = { ...current } as Record<string, string>;
       for (const [k, v] of Object.entries(body.siteContent)) {
-        if (typeof v === "string") {
-          (next as Record<string, string>)[k] = v;
-        }
+        if (!SITE_CONTENT_KEYS.has(k as keyof SiteContent)) continue;
+        if (typeof v !== "string") continue;
+        if (v.length > 1000) continue;
+        next[k] = v;
       }
-      patch.siteContent = next as SiteContent;
+      patch.siteContent = next as unknown as SiteContent;
     }
 
     const settings = await updateSettings(patch);

@@ -3,6 +3,8 @@ import { requireUser, AuthError } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { orchestrateGeneration } from "@/lib/agent";
 import { captureError, trackEvent } from "@/lib/observability";
+import { moderateAndLog } from "@/lib/moderation";
+import { isKilled } from "@/lib/kill-switch";
 import type { FilmFormat, GenerationMode } from "@/lib/types/film";
 import { FORMAT_CONFIG, computeLaunchAt, STYLE_PRESETS } from "@/lib/types/film";
 
@@ -27,11 +29,20 @@ interface StartBody {
  */
 export async function POST(req: Request) {
   try {
+    if (isKilled("generation")) {
+      return NextResponse.json({ error: "Génération temporairement désactivée." }, { status: 503 });
+    }
     const user = await requireUser();
     const body = (await req.json()) as StartBody;
 
     if (!body.userPrompt?.trim()) {
       return NextResponse.json({ error: "Prompt requis" }, { status: 400 });
+    }
+    if (body.userPrompt.length > 4000) {
+      return NextResponse.json(
+        { error: "Prompt trop long (max 4000 caractères)" },
+        { status: 400 }
+      );
     }
     if (!FORMAT_CONFIG[body.format]) {
       return NextResponse.json({ error: "Format invalide" }, { status: 400 });
@@ -39,11 +50,30 @@ export async function POST(req: Request) {
     if (body.mode !== "express" && body.mode !== "assisted") {
       return NextResponse.json({ error: "Mode invalide" }, { status: 400 });
     }
-    if (body.stylePresetId && !STYLE_PRESETS[body.stylePresetId]) {
+
+    // Moderation — runs against the user's seed idea. Without this an
+    // attacker could drive the entire pipeline (scenario, scenes, videos)
+    // toward illegal content. Critical categories (minors) auto-suspend.
+    const mod = await moderateAndLog(prisma, {
+      userId: user.id,
+      content: body.userPrompt,
+      kind: "visual-prompt",
+    });
+    if (!mod.allowed) {
       return NextResponse.json(
-        { error: "Style preset inconnu" },
-        { status: 400 }
+        {
+          error: `Prompt refusé par la modération (${mod.category || "other"}) : ${mod.reason || "contenu non autorisé"}`,
+          moderation: {
+            allowed: false,
+            category: mod.category,
+            reason: mod.reason,
+          },
+        },
+        { status: 422 }
       );
+    }
+    if (body.stylePresetId && !STYLE_PRESETS[body.stylePresetId]) {
+      return NextResponse.json({ error: "Style preset inconnu" }, { status: 400 });
     }
     if (body.parentFilmId) {
       // Sequel preconditions (V7 §4.2)
@@ -107,9 +137,7 @@ export async function POST(req: Request) {
           stylePresetId: body.stylePresetId,
           parentFilmId: body.parentFilmId,
         } as unknown as object,
-        status: scheduledAt && launchAt && launchAt > new Date()
-          ? "scheduled"
-          : "pending",
+        status: scheduledAt && launchAt && launchAt > new Date() ? "scheduled" : "pending",
       },
     });
 
@@ -156,8 +184,8 @@ export async function POST(req: Request) {
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    // eslint-disable-next-line no-console
-    console.error("[agent/start]", err);
+    const { log } = await import("@/lib/logger");
+    log.error("agent.start failed", err);
     return NextResponse.json({ error: "Erreur serveur" }, { status: 500 });
   }
 }

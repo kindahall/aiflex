@@ -1,6 +1,10 @@
 import "server-only";
+import { timingSafeEqual } from "node:crypto";
 import { PLANS, type PlanId } from "./plans";
 import { findUserById, listUsers, updateUser } from "./server-db";
+import { timedFetch } from "./safe-outbound";
+import { withOutboundLimit } from "./outbound-limit";
+import { log } from "./logger";
 
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
@@ -19,39 +23,40 @@ export async function stripePost(
   endpoint: string,
   body: Record<string, string>
 ): Promise<Record<string, unknown>> {
-  const res = await fetch(`${STRIPE_API}${endpoint}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams(body).toString(),
+  return withOutboundLimit("stripe", async () => {
+    const res = await timedFetch(`${STRIPE_API}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${STRIPE_SECRET_KEY}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams(body).toString(),
+      timeoutMs: 15_000,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data as { error?: { message?: string } }).error?.message ?? "Stripe API error";
+      throw new Error(msg);
+    }
+    return data as Record<string, unknown>;
   });
-  const data = await res.json();
-  if (!res.ok) {
-    const msg =
-      (data as { error?: { message?: string } }).error?.message ??
-      "Stripe API error";
-    throw new Error(msg);
-  }
-  return data as Record<string, unknown>;
 }
 
-export async function stripeGet(
-  endpoint: string
-): Promise<Record<string, unknown>> {
-  const res = await fetch(`${STRIPE_API}${endpoint}`, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${STRIPE_SECRET_KEY}` },
+export async function stripeGet(endpoint: string): Promise<Record<string, unknown>> {
+  return withOutboundLimit("stripe", async () => {
+    const res = await timedFetch(`${STRIPE_API}${endpoint}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${STRIPE_SECRET_KEY}` },
+      timeoutMs: 15_000,
+      retry: { attempts: 2, baseMs: 300 },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data as { error?: { message?: string } }).error?.message ?? "Stripe API error";
+      throw new Error(msg);
+    }
+    return data as Record<string, unknown>;
   });
-  const data = await res.json();
-  if (!res.ok) {
-    const msg =
-      (data as { error?: { message?: string } }).error?.message ??
-      "Stripe API error";
-    throw new Error(msg);
-  }
-  return data as Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,10 +78,16 @@ async function computeHmac(secret: string, payload: string): Promise<string> {
     .join("");
 }
 
-async function verifyWebhookSignature(
-  body: string,
-  signature: string
-): Promise<boolean> {
+function hexEqTimingSafe(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+async function verifyWebhookSignature(body: string, signature: string): Promise<boolean> {
   // Stripe-Signature header format: t=<ts>,v1=<sig>[,v0=<sig>]
   const parts = Object.fromEntries(
     signature.split(",").map((p) => {
@@ -94,7 +105,27 @@ async function verifyWebhookSignature(
 
   const signedPayload = `${timestamp}.${body}`;
   const expected = await computeHmac(STRIPE_WEBHOOK_SECRET, signedPayload);
-  return expected === v1;
+  return hexEqTimingSafe(expected, v1);
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency — each Stripe event id MUST be processed once and only once.
+// Stripe retries on 5xx + on its own cadence, so without dedup we can
+// double-activate subscriptions, double-credit tips, etc.
+// ---------------------------------------------------------------------------
+
+const PROCESSED_EVENT_TTL_MS = 24 * 60 * 60 * 1000;
+const processedEvents = new Map<string, number>();
+
+function alreadyProcessed(eventId: string): boolean {
+  const now = Date.now();
+  // Cleanup expired entries on every touch — O(n) but n is tiny in practice.
+  for (const [k, t] of processedEvents) {
+    if (now - t > PROCESSED_EVENT_TTL_MS) processedEvents.delete(k);
+  }
+  if (processedEvents.has(eventId)) return true;
+  processedEvents.set(eventId, now);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,10 +164,13 @@ export async function createCheckoutSession(
     client_reference_id: userId,
   };
 
-  // Reuse existing Stripe customer if available.
+  // Reuse existing Stripe customer if available. Otherwise only pass the
+  // email to Stripe if the user has verified it — otherwise a signup flow
+  // with `victim@example.com` would bind Stripe's customer record to the
+  // victim's address before ownership is proven.
   if (user.stripeCustomerId) {
     params.customer = user.stripeCustomerId;
-  } else {
+  } else if (user.emailVerified) {
     params.customer_email = user.email;
   }
 
@@ -147,10 +181,7 @@ export async function createCheckoutSession(
 /**
  * Create a Stripe Customer Portal session.
  */
-export async function createPortalSession(
-  customerId: string,
-  returnUrl: string
-): Promise<string> {
+export async function createPortalSession(customerId: string, returnUrl: string): Promise<string> {
   if (!isStripeConfigured()) throw new Error("Stripe non configuré");
 
   const session = await stripePost("/billing_portal/sessions", {
@@ -167,19 +198,28 @@ export async function createPortalSession(
 export async function handleWebhookEvent(
   body: string,
   signature: string
-): Promise<{ received: boolean }> {
+): Promise<{ received: boolean; duplicate?: boolean }> {
   if (!isStripeConfigured()) return { received: false };
 
-  // Verify signature
-  if (STRIPE_WEBHOOK_SECRET) {
-    const valid = await verifyWebhookSignature(body, signature);
-    if (!valid) throw new Error("Signature webhook invalide");
+  // Signature verification is MANDATORY. Never fall back silently when the
+  // secret is missing — an unsigned webhook lets attackers forge subscription
+  // activations, tips, PPV unlocks, etc.
+  if (!STRIPE_WEBHOOK_SECRET) {
+    throw new Error("STRIPE_WEBHOOK_SECRET non configuré — webhook refusé par sécurité");
   }
+  const valid = await verifyWebhookSignature(body, signature);
+  if (!valid) throw new Error("Signature webhook invalide");
 
   const event = JSON.parse(body) as {
+    id?: string;
     type: string;
     data: { object: Record<string, unknown> };
   };
+
+  // Idempotency dedup — Stripe retries; without this we'd double-apply side-effects.
+  if (event.id && alreadyProcessed(event.id)) {
+    return { received: true, duplicate: true };
+  }
 
   switch (event.type) {
     case "checkout.session.completed":
@@ -225,11 +265,19 @@ export async function handleWebhookEvent(
 // Event handlers (internal)
 // ---------------------------------------------------------------------------
 
-async function findUserByStripeCustomer(
-  customerId: string
-): Promise<string | null> {
-  // Linear scan — fine for a JSON-backed prototype.
-  // In production you'd index stripeCustomerId in the DB.
+async function findUserByStripeCustomer(customerId: string): Promise<string | null> {
+  // Prisma path first — indexed @unique lookup, O(1). JSON-DB fallback
+  // keeps local dev working before Prisma migrations are applied.
+  try {
+    const { prisma } = await import("./prisma");
+    const row = await prisma.user.findFirst({
+      where: { stripeCustomerId: customerId },
+      select: { id: true },
+    });
+    if (row) return row.id;
+  } catch {
+    /* fall through to JSON scan */
+  }
   const users = await listUsers();
   const u = users.find((x) => x.stripeCustomerId === customerId);
   return u?.id ?? null;
@@ -263,9 +311,7 @@ async function handleCheckoutCompleted(obj: Record<string, unknown>) {
   // One-shot payments (boost, sequel, upload, ppv, tip) carry `metadata.kind`
   // and have no `subscription` attached. Route them before the subscription
   // activation path so we don't accidentally write plan data for a boost.
-  const { isOneShotCheckout, handleOneShotCheckoutCompleted } = await import(
-    "./stripe-oneshot"
-  );
+  const { isOneShotCheckout, handleOneShotCheckoutCompleted } = await import("./stripe-oneshot");
   if (isOneShotCheckout(obj)) {
     await handleOneShotCheckoutCompleted(obj);
     return;
@@ -317,9 +363,7 @@ async function handleCheckoutCompleted(obj: Record<string, unknown>) {
   });
 }
 
-async function handleCreatorBundleCompleted(
-  obj: Record<string, unknown>
-): Promise<void> {
+async function handleCreatorBundleCompleted(obj: Record<string, unknown>): Promise<void> {
   const meta = (obj.metadata as Record<string, string>) || {};
   const subscriberId = meta.subscriberId;
   const creatorId = meta.creatorId;
@@ -356,13 +400,11 @@ async function handleCreatorBundleCompleted(
     });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("[stripe] creator bundle activation failed:", err);
+    log.error("stripe.creatorBundle.activate failed", err, { subscriberId, creatorId });
   }
 }
 
-async function handleCreatorProCompleted(
-  obj: Record<string, unknown>
-): Promise<void> {
+async function handleCreatorProCompleted(obj: Record<string, unknown>): Promise<void> {
   const meta = (obj.metadata as Record<string, string>) || {};
   const userId = meta.userId;
   const planKey = meta.plan;
@@ -398,7 +440,7 @@ async function handleCreatorProCompleted(
     });
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error("[stripe] creator-pro activation failed:", err);
+    log.error("stripe.creatorPro.activate failed", err, { userId, planKey });
   }
 }
 

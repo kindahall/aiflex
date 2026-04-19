@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { findUserByEmail } from "@/lib/server-db";
-import { signToken } from "@/lib/tokens";
+import { fingerprintState, signToken } from "@/lib/tokens";
 import { publicUrl, sendEmail } from "@/lib/email";
 
 export const runtime = "nodejs";
@@ -28,7 +28,10 @@ export async function POST(req: Request) {
       if (!email) return;
       const user = await findUserByEmail(email);
       if (!user || user.suspended) return;
-      const token = signToken(user.id, "password-reset", 60 * 60); // 1h
+      // Bind the token to the current password hash so a reset invalidates
+      // any outstanding tokens (single-use by design, stateless).
+      const bind = fingerprintState(user.passwordHash);
+      const token = signToken(user.id, "password-reset", 60 * 60, { bind });
       const url = publicUrl(`/reset-password?token=${token}`);
       await sendEmail({
         to: user.email,

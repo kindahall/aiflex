@@ -39,12 +39,7 @@ export interface YotiSessionHandle {
   hostedUrl: string;
 }
 
-export type YotiSessionState =
-  | "ONGOING"
-  | "COMPLETED"
-  | "FAILED"
-  | "EXPIRED"
-  | "UNKNOWN";
+export type YotiSessionState = "ONGOING" | "COMPLETED" | "FAILED" | "EXPIRED" | "UNKNOWN";
 
 export interface YotiSessionStatus {
   state: YotiSessionState;
@@ -113,7 +108,10 @@ export async function createYotiSession(
           type: "DOCUMENT_RESTRICTIONS",
           inclusion: "INCLUDE",
           documents: [
-            { country_codes: [params.country ?? "FR"], document_types: ["PASSPORT", "DRIVING_LICENCE", "NATIONAL_ID"] },
+            {
+              country_codes: [params.country ?? "FR"],
+              document_types: ["PASSPORT", "DRIVING_LICENCE", "NATIONAL_ID"],
+            },
           ],
         },
       },
@@ -124,15 +122,23 @@ export async function createYotiSession(
   const json = JSON.stringify(body);
   const digest = signRsaSha256(json, process.env.YOTI_API_KEY!);
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Yoti-Auth-Digest": digest,
-      Accept: "application/json",
-    },
-    body: json,
-  });
+  const { timedFetch } = await import("./safe-outbound");
+  const { withOutboundLimit } = await import("./outbound-limit");
+  const { withCircuitBreaker } = await import("./circuit-breaker");
+  const res = await withCircuitBreaker("yoti", () =>
+    withOutboundLimit("yoti", () =>
+      timedFetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Yoti-Auth-Digest": digest,
+          Accept: "application/json",
+        },
+        body: json,
+        timeoutMs: 15_000,
+      })
+    )
+  );
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Yoti session create failed (${res.status}): ${text.slice(0, 400)}`);
@@ -157,21 +163,30 @@ export async function createYotiSession(
  * we don't trust the webhook to arrive) and by the callback handler to
  * confirm the result before flipping `User.ageVerified = "verified"`.
  */
-export async function getYotiSessionStatus(
-  sessionId: string
-): Promise<YotiSessionStatus> {
+export async function getYotiSessionStatus(sessionId: string): Promise<YotiSessionStatus> {
   if (!isYotiConfigured()) {
     return { state: "UNKNOWN", ageVerified: false };
   }
   const url = `${YOTI_BASE}/sessions/${encodeURIComponent(sessionId)}?sdkId=${encodeURIComponent(process.env.YOTI_SDK_ID!)}`;
   // GET requests need a digest of the empty string per Yoti spec
   const digest = signRsaSha256("", process.env.YOTI_API_KEY!);
-  const res = await fetch(url, {
-    headers: {
-      "X-Yoti-Auth-Digest": digest,
-      Accept: "application/json",
-    },
-  });
+  const { timedFetch } = await import("./safe-outbound");
+  const { withOutboundLimit } = await import("./outbound-limit");
+  let res: Response;
+  try {
+    res = await withOutboundLimit("yoti", () =>
+      timedFetch(url, {
+        headers: {
+          "X-Yoti-Auth-Digest": digest,
+          Accept: "application/json",
+        },
+        timeoutMs: 10_000,
+        retry: { attempts: 2, baseMs: 500 },
+      })
+    );
+  } catch {
+    return { state: "UNKNOWN", ageVerified: false };
+  }
   if (!res.ok) {
     return { state: "UNKNOWN", ageVerified: false };
   }

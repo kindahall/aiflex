@@ -21,7 +21,15 @@ export type Format =
   | "anime-episode"
   | "documentaire";
 
-export type Tone = "epique" | "sombre" | "onirique" | "comique" | "tendu" | "intime" | "apocalyptique" | "nostalgique";
+export type Tone =
+  | "epique"
+  | "sombre"
+  | "onirique"
+  | "comique"
+  | "tendu"
+  | "intime"
+  | "apocalyptique"
+  | "nostalgique";
 
 export type ProjectStage =
   | "idea"
@@ -237,6 +245,12 @@ export interface Session {
   userId: string;
   createdAt: number;
   expiresAt: number;
+  /** IP recorded when the session was created. */
+  ipAddress?: string;
+  /** UA string recorded at session start, truncated to 400 chars. */
+  userAgent?: string;
+  /** Updated on every request that uses this session. */
+  lastSeenAt?: number;
 }
 
 export interface AuthedUser extends User {
@@ -294,12 +308,7 @@ export interface Report {
   reviewedBy?: string;
 }
 
-export type NotificationKind =
-  | "like"
-  | "comment"
-  | "remix"
-  | "video-ready"
-  | "system";
+export type NotificationKind = "like" | "comment" | "remix" | "video-ready" | "system";
 
 export interface Notification {
   id: string;

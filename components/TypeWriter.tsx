@@ -44,11 +44,7 @@ export default function TypeWriter({
 
     const speed = isDeleting ? deletingSpeed : typingSpeed;
     const timer = setTimeout(() => {
-      setText((prev) =>
-        isDeleting
-          ? prev.slice(0, -1)
-          : currentWord.slice(0, prev.length + 1)
-      );
+      setText((prev) => (isDeleting ? prev.slice(0, -1) : currentWord.slice(0, prev.length + 1)));
     }, speed);
 
     return () => clearTimeout(timer);
@@ -56,7 +52,7 @@ export default function TypeWriter({
 
   return (
     <span className={className}>
-      {text}
+      <span>{text}</span>
       <span className="animate-pulse text-flex-accent">|</span>
     </span>
   );

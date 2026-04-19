@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { aggregateDaily } from "@/lib/analytics";
 import { verifyCronRequest } from "@/lib/cron-auth";
+import { prisma } from "@/lib/prisma";
+import { log } from "@/lib/logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,10 +29,24 @@ export async function POST(req: Request) {
 
   try {
     const result = await aggregateDaily(date);
-    return NextResponse.json(result);
+
+    // Refresh the materialized views populated by the
+    // 20260419120000_pgvector_indexes_and_matviews migration. Best-effort:
+    // if the function isn't present (older DB), skip silently so the daily
+    // aggregate still completes.
+    let matviewsRefreshed = false;
+    try {
+      await prisma.$executeRawUnsafe("SELECT refresh_analytics_matviews()");
+      matviewsRefreshed = true;
+    } catch (err) {
+      log.warn("analytics.matview.refresh failed", {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return NextResponse.json({ ...result, matviewsRefreshed });
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error("[analytics/aggregate]", err);
+    log.error("analytics.aggregate failed", err);
     return NextResponse.json({ error: "Erreur agrégation" }, { status: 500 });
   }
 }

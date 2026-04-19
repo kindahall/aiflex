@@ -63,11 +63,9 @@ describe("shouldBlockForCsrf", () => {
   });
 
   it("lets server-to-server requests without Origin through (cron, curl)", () => {
-    expect(
-      shouldBlockForCsrf(
-        make({ method: "POST", pathname: "/api/agent/cron-check" })
-      )
-    ).toBe(false);
+    expect(shouldBlockForCsrf(make({ method: "POST", pathname: "/api/agent/cron-check" }))).toBe(
+      false
+    );
   });
 
   it("blocks a cross-origin POST whose Origin doesn't match APP_URL", () => {
@@ -94,8 +92,13 @@ describe("shouldBlockForCsrf", () => {
     ).toBe(false);
   });
 
-  it("also allows the request when Origin matches the Host header (no APP_URL)", () => {
+  it("blocks requests when only the Host header matches (Host header not trusted by default)", () => {
+    // Host header is attacker-controllable behind some reverse proxies, so
+    // the check does NOT fall back to it unless the operator sets
+    // CSRF_TRUST_REQUEST_HOST=1. This test documents the hardened default.
     delete process.env.APP_URL;
+    delete process.env.ADDITIONAL_ALLOWED_ORIGINS;
+    delete process.env.CSRF_TRUST_REQUEST_HOST;
     expect(
       shouldBlockForCsrf(
         make({
@@ -106,7 +109,28 @@ describe("shouldBlockForCsrf", () => {
           proto: "https",
         })
       )
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("allows Host fallback only when CSRF_TRUST_REQUEST_HOST=1", () => {
+    delete process.env.APP_URL;
+    delete process.env.ADDITIONAL_ALLOWED_ORIGINS;
+    process.env.CSRF_TRUST_REQUEST_HOST = "1";
+    try {
+      expect(
+        shouldBlockForCsrf(
+          make({
+            method: "POST",
+            pathname: "/api/projects/1",
+            origin: "https://my-staging.example.com",
+            host: "my-staging.example.com",
+            proto: "https",
+          })
+        )
+      ).toBe(false);
+    } finally {
+      delete process.env.CSRF_TRUST_REQUEST_HOST;
+    }
   });
 
   it("blocks PATCH and DELETE the same way as POST", () => {

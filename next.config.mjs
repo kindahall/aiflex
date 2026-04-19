@@ -4,13 +4,21 @@ import { withSentryConfig } from "@sentry/nextjs";
 const nextConfig = {
   reactStrictMode: true,
   images: {
+    // Strict hostnames only — never a wildcard on a provider we don't
+    // control. Each entry is pinned to a specific pathname scope when
+    // possible so a takeover of /tmp/* on fal.media can't be abused to
+    // poison the Next.js image optimizer cache.
     remotePatterns: [
-      { protocol: "https", hostname: "images.unsplash.com" },
-      { protocol: "https", hostname: "picsum.photos" },
-      { protocol: "https", hostname: "fal.media" },
-      { protocol: "https", hostname: "v3.fal.media" },
-      { protocol: "https", hostname: "v2.fal.media" },
+      { protocol: "https", hostname: "images.unsplash.com", pathname: "/**" },
+      { protocol: "https", hostname: "picsum.photos", pathname: "/**" },
+      { protocol: "https", hostname: "fal.media", pathname: "/files/**" },
+      { protocol: "https", hostname: "v3.fal.media", pathname: "/files/**" },
+      { protocol: "https", hostname: "v2.fal.media", pathname: "/files/**" },
+      { protocol: "https", hostname: "cdn.fal.media", pathname: "/files/**" },
     ],
+    // Cap image optimizer concurrency to protect memory on multi-tenant
+    // hosts.
+    minimumCacheTTL: 60,
   },
 };
 

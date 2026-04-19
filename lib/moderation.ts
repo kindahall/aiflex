@@ -1,5 +1,11 @@
 import "server-only";
+import { createHash } from "node:crypto";
 import { callModerationJSON } from "./ai-client";
+import { log } from "./logger";
+
+async function sha256Fingerprint(s: string): Promise<string> {
+  return "sha256:" + createHash("sha256").update(s).digest("hex").slice(0, 32);
+}
 
 /**
  * Lightweight content moderation for visual prompts before they hit the
@@ -35,20 +41,27 @@ export interface ModerationResult {
   bypassed?: boolean;
 }
 
-export type ModerationKind =
-  | "visual-prompt"
-  | "user-text"
-  | "upload-desc"
-  | "dm";
+export type ModerationKind = "visual-prompt" | "user-text" | "upload-desc" | "dm";
+
+/**
+ * Whether a missing provider / transport error must block content.
+ * Explicit `MODERATION_ENFORCE=1` wins over `NODE_ENV`, so previews or
+ * mislabeled runtimes cannot silently fall back to fail-open.
+ * `MODERATION_ENFORCE=0` is the documented opt-out for local dev/CI.
+ */
+function mustFailClosed(): boolean {
+  const flag = process.env.MODERATION_ENFORCE;
+  if (flag === "1") return true;
+  if (flag === "0") return false;
+  return process.env.NODE_ENV === "production";
+}
 
 /**
  * Categories that trigger automatic admin escalation regardless of caller.
  * These content types are criminal in most jurisdictions — we log the event
  * with full context and suspend the user pending review.
  */
-export const CRITICAL_CATEGORIES: readonly ModerationCategory[] = [
-  "minors",
-] as const;
+export const CRITICAL_CATEGORIES: readonly ModerationCategory[] = ["minors"] as const;
 
 const VISUAL_SYSTEM = `Tu es un modérateur de contenu pour AIflex, plateforme de génération de films par IA.
 
@@ -141,12 +154,20 @@ export async function moderateContent(
     }
     return parsed;
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      "[moderation] could not parse AI response, failing open:",
-      err,
-      text
-    );
+    log.warn("moderation.parse failed", {
+      err: err instanceof Error ? err.message : String(err),
+      sample: text.slice(0, 200),
+    });
+    // Malformed moderation responses must never greenlight content when
+    // enforcement is on; `mustFailClosed` uses an explicit flag so preview
+    // envs / mislabeled containers can't silently fall open.
+    if (mustFailClosed()) {
+      return {
+        allowed: false,
+        category: "other",
+        reason: "Vérification de modération indisponible — réessaye plus tard",
+      };
+    }
     return { allowed: true, bypassed: true };
   }
 }
@@ -161,25 +182,41 @@ export async function moderateContentSafe(
   content: string,
   kind: ModerationKind
 ): Promise<ModerationResult> {
+  const failClosed = mustFailClosed();
   if (!process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
+    if (failClosed) {
+      log.error("moderation.noProvider configured — failing closed");
+      return {
+        allowed: false,
+        category: "other",
+        reason: "Service de modération indisponible",
+      };
+    }
     return { allowed: true, bypassed: true };
   }
   try {
     return await moderateContent(content, kind);
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("[moderation] check failed, failing open:", err);
+    log.warn("moderation.check failed", {
+      kind,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    if (failClosed) {
+      return {
+        allowed: false,
+        category: "other",
+        reason: "Service de modération temporairement indisponible",
+      };
+    }
     return { allowed: true, bypassed: true };
   }
 }
 
 // --- Backwards-compat wrappers for the visual-prompt callers ---------
 
-export const moderatePrompt = (prompt: string) =>
-  moderateContent(prompt, "visual-prompt");
+export const moderatePrompt = (prompt: string) => moderateContent(prompt, "visual-prompt");
 
-export const moderatePromptSafe = (prompt: string) =>
-  moderateContentSafe(prompt, "visual-prompt");
+export const moderatePromptSafe = (prompt: string) => moderateContentSafe(prompt, "visual-prompt");
 
 // ---------------------------------------------------------------------------
 // Persistence + critical escalation (V8 §19.1, §19.9)
@@ -199,10 +236,7 @@ type PrismaModerationClient = {
     }) => Promise<unknown>;
   };
   user: {
-    update: (args: {
-      where: { id: string };
-      data: { suspended: boolean };
-    }) => Promise<unknown>;
+    update: (args: { where: { id: string }; data: { suspended: boolean } }) => Promise<unknown>;
   };
 };
 
@@ -225,16 +259,19 @@ export async function moderateAndLog(
 ): Promise<ModerationResult & { logged: boolean }> {
   const result = await moderateContentSafe(params.content, params.kind);
 
-  const decision = result.bypassed
-    ? "allowed"
-    : result.allowed
-      ? "allowed"
-      : "blocked";
+  const decision = result.bypassed ? "allowed" : result.allowed ? "allowed" : "blocked";
 
   const categories = result.category ? [result.category] : [];
-  const critical = result.category
-    ? CRITICAL_CATEGORIES.includes(result.category)
-    : false;
+  const critical = result.category ? CRITICAL_CATEGORIES.includes(result.category) : false;
+
+  // RGPD art. 5 (minimisation). We keep the content snippet only when the
+  // check actually flagged something — approved items store just a hash
+  // fingerprint so we can still correlate repeat offenders without
+  // retaining PII for two years.
+  const keepFullContent = !result.allowed || critical;
+  const storedContent = keepFullContent
+    ? params.content.slice(0, 1000)
+    : await sha256Fingerprint(params.content);
 
   let logged = false;
   try {
@@ -242,7 +279,7 @@ export async function moderateAndLog(
       data: {
         userId: params.userId,
         contentType: params.kind,
-        content: params.content.slice(0, 4000),
+        content: storedContent,
         decision: critical ? "flagged_for_review" : decision,
         categories,
         provider: "claude",
@@ -250,8 +287,9 @@ export async function moderateAndLog(
     });
     logged = true;
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn("[moderation] could not write ModerationLog:", err);
+    log.warn("moderation.log writeFailed", {
+      err: err instanceof Error ? err.message : String(err),
+    });
   }
 
   if (critical) {
@@ -260,13 +298,15 @@ export async function moderateAndLog(
         where: { id: params.userId },
         data: { suspended: true },
       });
-      // eslint-disable-next-line no-console
-      console.error(
-        `[moderation] CRITICAL auto-suspension user=${params.userId} category=${result.category}`
-      );
+      log.error("moderation.criticalAutoSuspend", undefined, {
+        userId: params.userId,
+        category: result.category,
+      });
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn("[moderation] could not auto-suspend user:", err);
+      log.warn("moderation.suspendFailed", {
+        userId: params.userId,
+        err: err instanceof Error ? err.message : String(err),
+      });
     }
     return { allowed: false, category: result.category, reason: result.reason, logged };
   }

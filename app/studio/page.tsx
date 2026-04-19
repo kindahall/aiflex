@@ -20,36 +20,81 @@ interface VisualItem {
 const GENRES: VisualItem[] = [
   { value: "sci-fi", label: "Sci-fi", icon: "🚀", image: "/assets/studio/genre_scifi.png" },
   { value: "fantasy", label: "Fantasy", icon: "🐉", image: "/assets/studio/genre_fantasy.png" },
-  { value: "thriller", label: "Thriller", icon: "🔪" },
-  { value: "romance", label: "Romance", icon: "💘" },
-  { value: "horror", label: "Horreur", icon: "👻" },
-  { value: "drama", label: "Drame", icon: "🎭" },
-  { value: "comedy", label: "Comédie", icon: "😂" },
-  { value: "action", label: "Action", icon: "💥" },
-  { value: "anime", label: "Anime", icon: "⚔️" },
-  { value: "noir", label: "Polar", icon: "🕵" },
-  { value: "western", label: "Western", icon: "🤠" },
-  { value: "documentary", label: "Docu", icon: "📹" },
+  { value: "thriller", label: "Thriller", icon: "🔪", image: "/assets/studio/genre_thriller.png" },
+  { value: "romance", label: "Romance", icon: "💘", image: "/assets/studio/genre_romance.png" },
+  { value: "horror", label: "Horreur", icon: "👻", image: "/assets/studio/genre_horror.png" },
+  { value: "drama", label: "Drame", icon: "🎭", image: "/assets/studio/genre_drama.png" },
+  { value: "comedy", label: "Comédie", icon: "😂", image: "/assets/studio/genre_comedy.png" },
+  { value: "action", label: "Action", icon: "💥", image: "/assets/studio/genre_action.png" },
+  { value: "anime", label: "Anime", icon: "⚔️", image: "/assets/studio/genre_anime.png" },
+  { value: "noir", label: "Polar", icon: "🕵", image: "/assets/studio/genre_noir.png" },
+  { value: "western", label: "Western", icon: "🤠", image: "/assets/studio/genre_western.png" },
+  {
+    value: "documentary",
+    label: "Docu",
+    icon: "📹",
+    image: "/assets/studio/genre_documentary.png",
+  },
 ];
 
 const FORMATS: VisualItem[] = [
-  { value: "court-metrage", label: "Court-métrage", hint: "8–14 scènes, 2 min", image: "/assets/studio/format_short.png" },
-  { value: "long-metrage", label: "Long-métrage", hint: "12–20 scènes, 3 min", image: "/assets/studio/format_long.png" },
-  { value: "mini-serie", label: "Mini-série", hint: "Pilote + arc", image: "/assets/studio/format_series.png" },
-  { value: "anime-episode", label: "Épisode anime", hint: "Format 24 min" },
-  { value: "clip", label: "Clip musical", hint: "Narratif court", image: "/assets/studio/format_clip.png" },
-  { value: "trailer", label: "Trailer", hint: "Bande-annonce concept" },
+  {
+    value: "court-metrage",
+    label: "Court-métrage",
+    hint: "8–14 scènes, 2 min",
+    image: "/assets/studio/format_short.png",
+  },
+  {
+    value: "long-metrage",
+    label: "Long-métrage",
+    hint: "12–20 scènes, 3 min",
+    image: "/assets/studio/format_long.png",
+  },
+  {
+    value: "mini-serie",
+    label: "Mini-série",
+    hint: "Pilote + arc",
+    image: "/assets/studio/format_series.png",
+  },
+  {
+    value: "anime-episode",
+    label: "Épisode anime",
+    hint: "Format 24 min",
+    image: "/assets/studio/format_anime_ep.png",
+  },
+  {
+    value: "clip",
+    label: "Clip musical",
+    hint: "Narratif court",
+    image: "/assets/studio/format_clip.png",
+  },
+  {
+    value: "trailer",
+    label: "Trailer",
+    hint: "Bande-annonce concept",
+    image: "/assets/studio/format_trailer.png",
+  },
 ];
 
 const TONES: VisualItem[] = [
-  { value: "epique", label: "Épique", icon: "⚡" },
-  { value: "sombre", label: "Sombre", icon: "🌑" },
-  { value: "onirique", label: "Onirique", icon: "☁️" },
-  { value: "comique", label: "Comique", icon: "😄" },
-  { value: "tendu", label: "Tendu", icon: "😰" },
-  { value: "intime", label: "Intime", icon: "🤫" },
-  { value: "apocalyptique", label: "Apocalyptique", icon: "🌋" },
-  { value: "nostalgique", label: "Nostalgique", icon: "📼" },
+  { value: "epique", label: "Épique", icon: "⚡", image: "/assets/studio/tone_epique.png" },
+  { value: "sombre", label: "Sombre", icon: "🌑", image: "/assets/studio/tone_sombre.png" },
+  { value: "onirique", label: "Onirique", icon: "☁️", image: "/assets/studio/tone_onirique.png" },
+  { value: "comique", label: "Comique", icon: "😄", image: "/assets/studio/tone_comique.png" },
+  { value: "tendu", label: "Tendu", icon: "😰", image: "/assets/studio/tone_tendu.png" },
+  { value: "intime", label: "Intime", icon: "🤫", image: "/assets/studio/tone_intime.png" },
+  {
+    value: "apocalyptique",
+    label: "Apocalyptique",
+    icon: "🌋",
+    image: "/assets/studio/tone_apocalyptique.png",
+  },
+  {
+    value: "nostalgique",
+    label: "Nostalgique",
+    icon: "📼",
+    image: "/assets/studio/tone_nostalgique.png",
+  },
 ];
 
 const EXAMPLES = [
@@ -188,7 +233,7 @@ export default function StudioEntryPage() {
     <div className="relative min-h-screen w-full bg-flex-bg pb-12 text-flex-text selection:bg-flex-accent/30 selection:text-flex-accent sm:pb-24">
       {/* Ambient background glows */}
       <div className="pointer-events-none absolute top-0 left-1/2 h-[400px] w-full max-w-4xl -translate-x-1/2 bg-flex-accent/5 blur-[80px] sm:h-[600px] sm:blur-[120px]" />
-      
+
       <div className="relative mx-auto max-w-6xl px-4 pt-16 sm:px-6 sm:pt-24">
         {/* Header Section */}
         <div className="mb-10 text-center animate-fadeUp sm:mb-12">
@@ -200,7 +245,8 @@ export default function StudioEntryPage() {
             Studio IA AIflex
           </div>
           <h1 className="mb-5 text-[2rem] leading-[1.1] font-black tracking-tight sm:mb-6 sm:text-5xl sm:leading-tight sm:tracking-tighter md:text-7xl">
-            Donne-nous une idée.<br className="hidden sm:block" />
+            Donne-nous une idée.
+            <br className="hidden sm:block" />
             <span className="mt-2 block bg-gradient-to-r from-flex-accent to-flex-accent2 bg-clip-text text-transparent sm:mt-0 sm:inline">
               On en fait{" "}
               <TypeWriter
@@ -216,12 +262,16 @@ export default function StudioEntryPage() {
             </span>
           </h1>
           <p className="mx-auto max-w-2xl px-2 text-sm leading-relaxed font-light text-flex-muted/80 sm:px-0 sm:text-base md:text-lg">
-            Écris une idée — même vague. Notre intelligence artificielle construit le concept narratif, découpe le scénario en scènes et génère chaque plan vidéo pour toi.
+            Écris une idée — même vague. Notre intelligence artificielle construit le concept
+            narratif, découpe le scénario en scènes et génère chaque plan vidéo pour toi.
           </p>
         </div>
 
         {/* Main Prompt Bar Section */}
-        <div className="mx-auto mb-12 max-w-4xl animate-fadeUp sm:mb-16" style={{ animationDelay: "100ms" }}>
+        <div
+          className="mx-auto mb-12 max-w-4xl animate-fadeUp sm:mb-16"
+          style={{ animationDelay: "100ms" }}
+        >
           <div
             className={`relative overflow-hidden rounded-2xl transition-all duration-500 sm:rounded-3xl ${
               inputFocused
@@ -273,12 +323,14 @@ export default function StudioEntryPage() {
         </div>
 
         {/* Categories / Visual Configuration Form */}
-        <div className="animate-fadeUp space-y-10 sm:space-y-16" style={{ animationDelay: "200ms" }}>
+        <div
+          className="animate-fadeUp space-y-10 sm:space-y-16"
+          style={{ animationDelay: "200ms" }}
+        >
           <section>
             <div className="mb-3 sm:mb-4">
               <h3 className="text-base font-bold tracking-tight sm:text-xl">
-                Que réalisons-nous ?{" "}
-                <span className="font-normal text-flex-muted">— Format</span>
+                Que réalisons-nous ? <span className="font-normal text-flex-muted">— Format</span>
               </h3>
             </div>
             <CardGrid
@@ -292,8 +344,7 @@ export default function StudioEntryPage() {
           <section>
             <div className="mb-3 sm:mb-4">
               <h3 className="text-base font-bold tracking-tight sm:text-xl">
-                Dans quel univers ?{" "}
-                <span className="font-normal text-flex-muted">— Genre</span>
+                Dans quel univers ? <span className="font-normal text-flex-muted">— Genre</span>
               </h3>
             </div>
             <CardGrid
@@ -364,8 +415,20 @@ export default function StudioEntryPage() {
                     fill="none"
                     className="h-5 w-5 animate-spin sm:h-6 sm:w-6"
                   >
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
-                    <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      opacity="0.25"
+                    />
+                    <path
+                      d="M12 2a10 10 0 0 1 10 10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeLinecap="round"
+                    />
                   </svg>
                   Création…
                 </span>

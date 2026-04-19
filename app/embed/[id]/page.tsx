@@ -40,11 +40,7 @@ export async function generateMetadata({
   };
 }
 
-export default async function EmbedPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function EmbedPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const project = await findProjectBySlugOrId(id).catch(() => null);
   if (!project || project.visibility !== "public" || project.status !== "ready") {
@@ -69,16 +65,37 @@ export default async function EmbedPage({
           Ton navigateur ne peut pas lire cette vidéo.
         </video>
       ) : (
-        <div
-          className="h-full w-full bg-cover bg-center"
-          style={{ backgroundImage: poster ? `url(${poster})` : undefined }}
-        />
+        (() => {
+          // Guard against CSS injection via a compromised poster URL.
+          // Only same-origin HTTPS URLs (or known AIflex CDN hosts) are
+          // allowed; anything else falls back to a plain background.
+          const safePoster = (() => {
+            if (!poster) return null;
+            try {
+              const u = new URL(poster, "https://aiflex.local");
+              if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+              // strip any quote or paren that could break out of url(...)
+              if (/["'()\s<>]/.test(poster)) return null;
+              return poster;
+            } catch {
+              return null;
+            }
+          })();
+          return (
+            <div
+              className="h-full w-full bg-cover bg-center"
+              style={{
+                backgroundImage: safePoster ? `url("${safePoster}")` : undefined,
+              }}
+            />
+          );
+        })()
       )}
 
       <a
         href={canonical}
         target="_blank"
-        rel="noopener"
+        rel="noopener noreferrer"
         className="absolute bottom-3 right-3 rounded-full bg-black/70 px-3 py-1.5 text-xs font-medium text-white backdrop-blur hover:bg-black/90"
       >
         Voir sur AIflex →

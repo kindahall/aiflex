@@ -3,6 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { MASTER_SYSTEM_PROMPT } from "./prompts";
 import { getSettings } from "./server-db";
+import { withOutboundLimit } from "./outbound-limit";
+import { withCircuitBreaker } from "./circuit-breaker";
 
 /**
  * Unified AI client.
@@ -76,39 +78,47 @@ export async function callNarrativeJSON(userPrompt: string): Promise<string> {
 }
 
 async function callAnthropic(model: string, userPrompt: string): Promise<string> {
-  const client = getAnthropicClient();
-  const response = await client.messages.create({
-    model,
-    max_tokens: 16000,
-    system: [
-      {
-        type: "text",
-        text: MASTER_SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral" },
-      },
-    ],
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  return withCircuitBreaker("anthropic", () =>
+    withOutboundLimit("anthropic", async () => {
+      const client = getAnthropicClient();
+      const response = await client.messages.create({
+        model,
+        max_tokens: 16000,
+        system: [
+          {
+            type: "text",
+            text: MASTER_SYSTEM_PROMPT,
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+        messages: [{ role: "user", content: userPrompt }],
+      });
 
-  return response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
+      return response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("\n")
+        .trim();
+    })
+  );
 }
 
 async function callOpenAI(model: string, userPrompt: string): Promise<string> {
-  const client = getOpenAIClient();
-  const response = await client.chat.completions.create({
-    model,
-    max_tokens: 16000,
-    messages: [
-      { role: "system", content: MASTER_SYSTEM_PROMPT },
-      { role: "user", content: userPrompt },
-    ],
-  });
+  return withCircuitBreaker("openai", () =>
+    withOutboundLimit("openai", async () => {
+      const client = getOpenAIClient();
+      const response = await client.chat.completions.create({
+        model,
+        max_tokens: 16000,
+        messages: [
+          { role: "system", content: MASTER_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+      });
 
-  return response.choices[0]?.message?.content?.trim() || "";
+      return response.choices[0]?.message?.content?.trim() || "";
+    })
+  );
 }
 
 // --- Moderation helper ---
@@ -118,48 +128,55 @@ async function callOpenAI(model: string, userPrompt: string): Promise<string> {
  * Claude Haiku if ANTHROPIC_API_KEY is set, falls back to GPT-4.1-mini
  * if only OPENAI_API_KEY is available.
  */
-export async function callModerationJSON(
-  systemPrompt: string,
-  content: string
-): Promise<string> {
+export async function callModerationJSON(systemPrompt: string, content: string): Promise<string> {
   const hasAnthropic = Boolean(process.env.ANTHROPIC_API_KEY);
   const hasOpenAI = Boolean(process.env.OPENAI_API_KEY);
 
   if (hasAnthropic) {
-    const client = getAnthropicClient();
-    const res = await client.messages.create({
-      model: "claude-haiku-4-5",
-      max_tokens: 200,
-      system: [
-        {
-          type: "text",
-          text: systemPrompt,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [{ role: "user", content }],
-    });
-    return res.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("")
-      .trim();
+    return withCircuitBreaker("anthropic", () =>
+      withOutboundLimit("anthropic", async () => {
+        const client = getAnthropicClient();
+        const res = await client.messages.create({
+          model: "claude-haiku-4-5",
+          max_tokens: 200,
+          system: [
+            {
+              type: "text",
+              text: systemPrompt,
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+          messages: [{ role: "user", content }],
+        });
+        return res.content
+          .filter((b): b is Anthropic.TextBlock => b.type === "text")
+          .map((b) => b.text)
+          .join("")
+          .trim();
+      })
+    );
   }
 
   if (hasOpenAI) {
-    const client = getOpenAIClient();
-    const res = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
-      max_tokens: 200,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content },
-      ],
-    });
-    return res.choices[0]?.message?.content?.trim() || "";
+    return withCircuitBreaker("openai", () =>
+      withOutboundLimit("openai", async () => {
+        const client = getOpenAIClient();
+        const res = await client.chat.completions.create({
+          model: "gpt-4.1-mini",
+          max_tokens: 200,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content },
+          ],
+        });
+        return res.choices[0]?.message?.content?.trim() || "";
+      })
+    );
   }
 
-  throw new Error("Aucune clé API IA configurée — définis ANTHROPIC_API_KEY ou OPENAI_API_KEY dans .env.local");
+  throw new Error(
+    "Aucune clé API IA configurée — définis ANTHROPIC_API_KEY ou OPENAI_API_KEY dans .env.local"
+  );
 }
 
 // --- JSON parser (same as before, works for both providers) ---

@@ -41,10 +41,7 @@ export async function GET() {
     const me = await requireUser();
     const record = await findUserById(me.id);
     if (!record) {
-      return NextResponse.json(
-        { error: "Compte introuvable" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Compte introuvable" }, { status: 404 });
     }
 
     const safeUser = toPublicUser(record) as Record<string, unknown>;
@@ -70,6 +67,11 @@ export async function GET() {
       reports,
       profiles,
       sessions,
+      directMessages,
+      conversations,
+      accessLogs,
+      aiCostEntries,
+      adminActionsOnMe,
     ] = await Promise.all([
       listProjectsByOwner(me.id),
       listWatchlist(me.id),
@@ -92,11 +94,9 @@ export async function GET() {
         where: { userId: me.id },
         orderBy: { createdAt: "desc" },
       }),
+      // RGPD Art. 15 — no retention cap on the user's own moderation history.
       prisma.moderationLog.findMany({
-        where: {
-          userId: me.id,
-          createdAt: { gte: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) },
-        },
+        where: { userId: me.id },
         orderBy: { createdAt: "desc" },
       }),
       prisma.report.findMany({ where: { reporterId: me.id } }),
@@ -110,11 +110,47 @@ export async function GET() {
           // token omitted on purpose
         },
       }),
+      // RGPD art. 20 — DMs belong to the user's data too.
+      prisma.directMessage.findMany({
+        where: { senderId: me.id },
+        orderBy: { createdAt: "desc" },
+        take: 5000,
+      }),
+      prisma.conversation.findMany({
+        where: { participants: { some: { userId: me.id } } },
+        orderBy: { lastMessageAt: "desc" },
+        take: 1000,
+      }),
+      // RGPD Art. 15 — who accessed what & when on this account.
+      prisma.accessLog.findMany({
+        where: { userId: me.id },
+        orderBy: { createdAt: "desc" },
+        take: 10000,
+      }),
+      // AI usage ledger for this user — transparency on what was spent on their behalf.
+      prisma.aiCostEntry.findMany({
+        where: { userId: me.id },
+        orderBy: { createdAt: "desc" },
+        take: 10000,
+      }),
+      // Admin actions targeting this user (ban, content removal, etc.).
+      prisma.adminAuditLog.findMany({
+        where: { targetType: "user", targetId: me.id },
+        select: {
+          id: true,
+          action: true,
+          createdAt: true,
+          metadata: true,
+          // adminId / ipAddress / userAgent omitted — not the data subject's
+          // personal data and can de-anonymize staff.
+        },
+        orderBy: { createdAt: "desc" },
+      }),
     ]);
 
     const payload = {
       exportedAt: new Date().toISOString(),
-      formatVersion: "2",
+      formatVersion: "3",
       note:
         "Cet export est généré au titre de l'article 20 RGPD (portabilité). " +
         "Les secrets (mots de passe, jetons 2FA, clés push) sont exclus.",
@@ -133,6 +169,11 @@ export async function GET() {
       reports,
       profiles,
       sessions,
+      directMessages,
+      conversations,
+      accessLogs,
+      aiCostEntries,
+      adminActionsOnMe,
     };
 
     return new NextResponse(JSON.stringify(payload, null, 2), {

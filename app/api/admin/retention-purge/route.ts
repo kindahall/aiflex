@@ -30,6 +30,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Default to dry-run — destructive retention deletion has to be
+  // explicitly opted into with `?apply=1`. Operators who schedule this
+  // from cron must pass it on every run.
+  const url = new URL(req.url);
+  const dryRun = url.searchParams.get("apply") !== "1";
+
   const now = Date.now();
   const cutoffs = {
     accessLog: new Date(now - 365 * 24 * 60 * 60 * 1000),
@@ -38,7 +44,8 @@ export async function POST(req: Request) {
     adminAuditLog: new Date(now - 2 * 365 * 24 * 60 * 60 * 1000),
   };
 
-  const result: Record<string, number | string> = {
+  const result: Record<string, number | string | boolean> = {
+    dryRun,
     cutoffs: JSON.stringify({
       accessLog: cutoffs.accessLog.toISOString().slice(0, 10),
       moderationLog: cutoffs.moderationLog.toISOString().slice(0, 10),
@@ -47,42 +54,61 @@ export async function POST(req: Request) {
     }),
   };
 
-  // Each delete is independent — one failure shouldn't stop the others.
-  try {
-    const r = await prisma.accessLog.deleteMany({
-      where: { createdAt: { lt: cutoffs.accessLog } },
-    });
-    result.accessLog = r.count;
-  } catch (err) {
-    result.accessLog = `error: ${err instanceof Error ? err.message : String(err)}`;
+  async function countOrDelete(
+    label: string,
+    countFn: () => Promise<number>,
+    deleteFn: () => Promise<{ count: number }>
+  ): Promise<void> {
+    try {
+      if (dryRun) {
+        result[label] = await countFn();
+      } else {
+        const r = await deleteFn();
+        result[label] = r.count;
+      }
+    } catch (err) {
+      result[label] = `error: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
-  try {
-    const r = await prisma.moderationLog.deleteMany({
-      where: { createdAt: { lt: cutoffs.moderationLog } },
-    });
-    result.moderationLog = r.count;
-  } catch (err) {
-    result.moderationLog = `error: ${err instanceof Error ? err.message : String(err)}`;
-  }
-
-  try {
-    const r = await prisma.dMCANotice.deleteMany({
-      where: { createdAt: { lt: cutoffs.dmcaNotice } },
-    });
-    result.dmcaNotice = r.count;
-  } catch (err) {
-    result.dmcaNotice = `error: ${err instanceof Error ? err.message : String(err)}`;
-  }
-
-  try {
-    const r = await prisma.adminAuditLog.deleteMany({
-      where: { createdAt: { lt: cutoffs.adminAuditLog } },
-    });
-    result.adminAuditLog = r.count;
-  } catch (err) {
-    result.adminAuditLog = `error: ${err instanceof Error ? err.message : String(err)}`;
-  }
+  await countOrDelete(
+    "accessLog",
+    () => prisma.accessLog.count({ where: { createdAt: { lt: cutoffs.accessLog } } }),
+    () => prisma.accessLog.deleteMany({ where: { createdAt: { lt: cutoffs.accessLog } } })
+  );
+  await countOrDelete(
+    "moderationLog",
+    () =>
+      prisma.moderationLog.count({
+        where: { createdAt: { lt: cutoffs.moderationLog } },
+      }),
+    () =>
+      prisma.moderationLog.deleteMany({
+        where: { createdAt: { lt: cutoffs.moderationLog } },
+      })
+  );
+  await countOrDelete(
+    "dmcaNotice",
+    () =>
+      prisma.dMCANotice.count({
+        where: { createdAt: { lt: cutoffs.dmcaNotice } },
+      }),
+    () =>
+      prisma.dMCANotice.deleteMany({
+        where: { createdAt: { lt: cutoffs.dmcaNotice } },
+      })
+  );
+  await countOrDelete(
+    "adminAuditLog",
+    () =>
+      prisma.adminAuditLog.count({
+        where: { createdAt: { lt: cutoffs.adminAuditLog } },
+      }),
+    () =>
+      prisma.adminAuditLog.deleteMany({
+        where: { createdAt: { lt: cutoffs.adminAuditLog } },
+      })
+  );
 
   return NextResponse.json(result);
 }

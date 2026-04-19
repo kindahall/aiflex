@@ -11,10 +11,15 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const key = getVapidPublicKey();
   if (!key) {
-    return NextResponse.json(
-      { error: "Push notifications non configurées" },
-      { status: 503 }
-    );
+    return NextResponse.json({ error: "Push notifications non configurées" }, { status: 503 });
   }
-  return NextResponse.json({ vapidPublicKey: key });
+  return NextResponse.json(
+    { vapidPublicKey: key },
+    {
+      headers: {
+        // Public key — long-lived, fine to cache aggressively.
+        "Cache-Control": "public, max-age=3600, s-maxage=86400",
+      },
+    }
+  );
 }

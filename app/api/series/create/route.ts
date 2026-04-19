@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { AuthError, requireUser } from "@/lib/auth";
+import { checkPlanAccess, planGateError } from "@/lib/plan-gate";
 import { createSeries } from "@/lib/series-orchestrator";
 import { SERIES_CONFIG, STYLE_PRESETS } from "@/lib/types/film";
 
@@ -16,15 +17,20 @@ interface Body {
 }
 
 /**
- * Create a full series (V7 §5).
- *
- * Payment gating: skipped for now (same TODO as /api/sequel). Once the
- * billing flow is finalized, wrap this behind a `createOneShotCheckout`
- * call in /api/series/checkout and activate in the webhook.
+ * Create a full series (V7 §5). Gated to Studio plan via `series-create`
+ * until the dedicated one-shot checkout flow ships — without the plan
+ * gate an unpaid user could trigger an agent pipeline that costs us
+ * meaningful dollars in AI provider fees.
  */
 export async function POST(req: Request) {
   try {
     const user = await requireUser();
+
+    const access = await checkPlanAccess(user.id, "series-create");
+    if (!access.allowed) {
+      return NextResponse.json({ error: planGateError(access.requiredPlan) }, { status: 403 });
+    }
+
     const body = (await req.json()) as Body;
 
     if (!body.userPrompt?.trim()) {

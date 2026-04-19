@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
+import { AuthError, requireAdmin } from "@/lib/auth";
+import { getTrustedClientIp } from "@/lib/client-ip";
 import { applyReportDecision, type ReportAction } from "@/lib/reports";
 
 export const runtime = "nodejs";
@@ -11,26 +12,20 @@ interface Body {
 
 const ALLOWED: ReportAction[] = ["removed", "warned", "suspended", "none"];
 
-export async function POST(
-  req: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = await requireUser();
-    if (user.role !== "admin") {
-      return NextResponse.json({ error: "Interdit" }, { status: 403 });
-    }
+    const user = await requireAdmin();
     const { id } = await params;
     const body = (await req.json()) as Body;
     if (!ALLOWED.includes(body.action)) {
       return NextResponse.json({ error: "Action invalide" }, { status: 400 });
     }
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+    const trustedIp = getTrustedClientIp(req);
     await applyReportDecision({
       reportId: id,
       adminId: user.id,
       action: body.action,
-      ipAddress: ip,
+      ipAddress: trustedIp !== "anonymous" ? trustedIp : undefined,
     });
     return NextResponse.json({ ok: true, action: body.action });
   } catch (err) {

@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { AuthError, requireUser } from "@/lib/auth";
-import {
-  sendBroadcast,
-  type BroadcastSegment,
-} from "@/lib/email-broadcast";
+import { AuthError, requireAdmin } from "@/lib/auth";
+import { sendBroadcast, type BroadcastSegment } from "@/lib/email-broadcast";
 import { logAdminAction } from "@/lib/audit";
+import { sanitizeBroadcastHtml } from "@/lib/html-sanitize";
+import { swallowAndReport } from "@/lib/observability";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,27 +27,26 @@ const VALID_SEGMENTS: BroadcastSegment[] = [
 
 export async function POST(req: Request) {
   try {
-    const user = await requireUser();
-    if (user.role !== "admin") {
-      return NextResponse.json({ error: "Interdit" }, { status: 403 });
-    }
+    const user = await requireAdmin();
     const body = (await req.json()) as Body;
 
     if (!body.segment || !VALID_SEGMENTS.includes(body.segment)) {
       return NextResponse.json({ error: "Segment invalide" }, { status: 400 });
     }
     if (!body.subject?.trim() || !body.textBody?.trim()) {
-      return NextResponse.json(
-        { error: "Sujet et corps texte requis" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Sujet et corps texte requis" }, { status: 400 });
     }
+
+    // Even admin-authored HTML is sanitized — a compromised admin
+    // account could otherwise ship a phishing payload on the AIflex
+    // domain to the whole user base.
+    const safeHtml = body.htmlBody ? sanitizeBroadcastHtml(body.htmlBody) : undefined;
 
     const result = await sendBroadcast({
       segment: body.segment,
       subject: body.subject,
       textBody: body.textBody,
-      htmlBody: body.htmlBody,
+      htmlBody: safeHtml,
       dryRun: !!body.dryRun,
       limit: body.limit,
     });
@@ -64,7 +62,7 @@ export async function POST(req: Request) {
           recipients: result.recipients,
           delivered: result.delivered,
         },
-      }).catch(() => {});
+      }).catch(swallowAndReport("admin/broadcast/log"));
     }
 
     return NextResponse.json(result);
