@@ -10,10 +10,16 @@ import ScenarioView from "@/components/ScenarioView";
 import SceneGrid from "@/components/SceneGrid";
 import SceneTimeline from "@/components/SceneTimeline";
 import AssemblyPlayer from "@/components/AssemblyPlayer";
+import FinalRenderButton from "@/components/FinalRenderButton";
+import DragDropTimeline from "@/components/DragDropTimeline";
+import TemplateToggle from "@/components/TemplateToggle";
+import RenderSettingsPanel from "@/components/RenderSettingsPanel";
+import SfxPromptPanel from "@/components/SfxPromptPanel";
 import FaceSwapPanel from "@/components/FaceSwapPanel";
 import LipSyncPanel from "@/components/LipSyncPanel";
 import CollaboratorPanel from "@/components/CollaboratorPanel";
 import {
+  generateSceneImage as apiGenerateSceneImage,
   getProject,
   patchProject,
   setVisibility,
@@ -33,11 +39,12 @@ export default function ProjectWorkspacePage() {
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [videoGenerating, setVideoGenerating] = useState<Set<string>>(new Set());
+  const [imageGenerating, setImageGenerating] = useState<Set<string>>(new Set());
+  const [atmosUsage, setAtmosUsage] = useState<{ used: number; quota: number } | null>(null);
 
   // Auth gate
   useEffect(() => {
-    if (!authLoading && !user)
-      router.push(`/login?next=/studio/${projectId}`);
+    if (!authLoading && !user) router.push(`/login?next=/studio/${projectId}`);
   }, [authLoading, user, router, projectId]);
 
   // Hydrate project from server
@@ -50,6 +57,31 @@ export default function ProjectWorkspacePage() {
         setTimeout(() => router.push("/dashboard"), 1200);
       });
   }, [projectId, user, router]);
+
+  // Best-effort load of the Atmos cloud quota widget state. Non-fatal if
+  // the endpoint errors (the widget just won't render).
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    fetch("/api/me/usage", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        if (
+          typeof data.atmosMinutesQuota === "number" &&
+          typeof data.atmosMinutesUsed === "number"
+        ) {
+          setAtmosUsage({
+            used: data.atmosMinutesUsed,
+            quota: data.atmosMinutesQuota,
+          });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   /** Persist a patch to the server and update local state. */
   const save = useCallback(
@@ -74,9 +106,7 @@ export default function ProjectWorkspacePage() {
    *  array. Called by SceneGrid when the user edits a card. */
   async function editScene(sceneId: string, patch: Partial<Scene>) {
     if (!project?.scenes) return;
-    const nextScenes = project.scenes.map((s) =>
-      s.id === sceneId ? { ...s, ...patch } : s
-    );
+    const nextScenes = project.scenes.map((s) => (s.id === sceneId ? { ...s, ...patch } : s));
     await save({ scenes: nextScenes });
   }
 
@@ -106,9 +136,7 @@ export default function ProjectWorkspacePage() {
     if (!project?.scenes) return;
     const scene = project.scenes.find((s) => s.id === sceneId);
     if (scene?.videoUrl) return; // can't delete a scene with a video
-    const next = project.scenes
-      .filter((s) => s.id !== sceneId)
-      .map((s, i) => ({ ...s, index: i }));
+    const next = project.scenes.filter((s) => s.id !== sceneId).map((s, i) => ({ ...s, index: i }));
     await save({ scenes: next });
   }
 
@@ -229,7 +257,10 @@ export default function ProjectWorkspacePage() {
 
       // Parse reference image URLs for character/element consistency
       const referenceImageUrls = scene.referenceImageUrl
-        ? scene.referenceImageUrl.split(",").map((u) => u.trim()).filter(Boolean)
+        ? scene.referenceImageUrl
+            .split(",")
+            .map((u) => u.trim())
+            .filter(Boolean)
         : undefined;
 
       const res = await fetch("/api/scene-video", {
@@ -243,7 +274,10 @@ export default function ProjectWorkspacePage() {
           projectId: project.id,
           sceneId: scene.id,
           referenceImageUrls,
-          imageUrl: scene.generationMode === "image-to-video" ? scene.referenceImageUrl?.split(",")[0] : undefined,
+          imageUrl:
+            scene.generationMode === "image-to-video"
+              ? scene.referenceImageUrl?.split(",")[0]
+              : undefined,
         }),
       });
       const data = await res.json();
@@ -255,15 +289,63 @@ export default function ProjectWorkspacePage() {
         throw new Error(data.error || "Échec génération vidéo");
       }
       const nextScenes = (project.scenes || []).map((s) =>
-        s.id === scene.id
-          ? { ...s, videoUrl: data.videoUrl, videoStatus: "ready" as const }
-          : s
+        s.id === scene.id ? { ...s, videoUrl: data.videoUrl, videoStatus: "ready" as const } : s
       );
       await save({ scenes: nextScenes });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur vidéo");
     } finally {
       setVideoGenerating((s) => {
+        const next = new Set(s);
+        next.delete(scene.id);
+        return next;
+      });
+    }
+  }
+
+  async function generateSceneImage(scene: Scene) {
+    if (!project) return;
+    setImageGenerating((s) => new Set(s).add(scene.id));
+    try {
+      let prompt = scene.imagePrompt || scene.visualPrompt;
+      if (scene.negativePrompt) {
+        prompt = `${prompt}. Avoid: ${scene.negativePrompt}`;
+      }
+      const res = await apiGenerateSceneImage({
+        projectId: project.id,
+        sceneId: scene.id,
+        prompt,
+        aspectRatio: scene.aspectRatio || "16:9",
+        seed: scene.imageSeed,
+        negativePrompt: scene.negativePrompt,
+      });
+      // Async mode: the job handler updates the scene; we optimistically
+      // mark it pending. A refetch on next save() will surface the URL.
+      if (res.async) {
+        const nextScenes = (project.scenes || []).map((s) =>
+          s.id === scene.id ? { ...s, imageStatus: "pending" as const } : s
+        );
+        await save({ scenes: nextScenes });
+        return;
+      }
+      if (res.imageUrl) {
+        const nextScenes = (project.scenes || []).map((s) =>
+          s.id === scene.id
+            ? {
+                ...s,
+                imageUrl: res.imageUrl,
+                imageStatus: "ready" as const,
+                imageModel: res.modelId,
+                imageSeed: res.seed,
+              }
+            : s
+        );
+        await save({ scenes: nextScenes });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur image");
+    } finally {
+      setImageGenerating((s) => {
         const next = new Set(s);
         next.delete(scene.id);
         return next;
@@ -305,22 +387,16 @@ export default function ProjectWorkspacePage() {
 
   return (
     <div>
-      <StudioStepper
-        current={project.stage}
-        onJumpTo={(stage) => save({ stage })}
-      />
+      <StudioStepper current={project.stage} onJumpTo={(stage) => save({ stage })} />
 
       <div className="mx-auto max-w-5xl px-6 pb-24">
         <div className="mb-8 rounded-xl glass-panel relative overflow-hidden p-5 shadow-obsidian">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <div className="text-[10px] font-semibold uppercase tracking-widest text-flex-muted">
-                Idée de départ · {project.genre} · {project.format} ·{" "}
-                {project.tone}
+                Idée de départ · {project.genre} · {project.format} · {project.tone}
               </div>
-              <div className="mt-1 text-sm text-flex-text">
-                « {project.idea} »
-              </div>
+              <div className="mt-1 text-sm text-flex-text">« {project.idea} »</div>
             </div>
             <div className="flex items-center gap-2">
               <Link
@@ -353,12 +429,10 @@ export default function ProjectWorkspacePage() {
         {/* STEP: idea → concept */}
         {!loading && project.stage === "idea" && (
           <div className="rounded-2xl glass-panel p-16 text-center shadow-cinema relative overflow-hidden animated-border">
-            <h3 className="mb-3 text-4xl font-black hologram-text">
-              Prêt à enrichir ton idée ?
-            </h3>
+            <h3 className="mb-3 text-4xl font-black hologram-text">Prêt à enrichir ton idée ?</h3>
             <p className="mx-auto mb-6 max-w-xl text-sm text-flex-muted">
-              L'IA va te proposer un concept complet : titre, logline,
-              synopsis, univers visuel et personnages principaux.
+              L'IA va te proposer un concept complet : titre, logline, synopsis, univers visuel et
+              personnages principaux.
             </p>
             <button
               type="button"
@@ -375,9 +449,7 @@ export default function ProjectWorkspacePage() {
           <>
             <ConceptView
               concept={project.concept}
-              onEdit={(patch) =>
-                save({ concept: { ...project.concept!, ...patch } })
-              }
+              onEdit={(patch) => save({ concept: { ...project.concept!, ...patch } })}
             />
             <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
               <button
@@ -437,12 +509,10 @@ export default function ProjectWorkspacePage() {
                   <div className="text-xs font-semibold uppercase tracking-widest text-flex-muted">
                     {project.concept?.title}
                   </div>
-                  <h2 className="text-2xl font-black">
-                    {project.scenes.length} scènes prêtes
-                  </h2>
+                  <h2 className="text-2xl font-black">{project.scenes.length} scènes prêtes</h2>
                   <p className="text-sm text-flex-muted">
-                    Génère chaque plan en vidéo grâce à l&apos;IA.
-                    Modifie les scènes avant de lancer la génération.
+                    Génère chaque plan en vidéo grâce à l&apos;IA. Modifie les scènes avant de
+                    lancer la génération.
                   </p>
                 </div>
                 <button
@@ -465,10 +535,13 @@ export default function ProjectWorkspacePage() {
               <SceneGrid
                 scenes={project.scenes}
                 onGenerateVideo={generateSceneVideo}
+                onGenerateImage={generateSceneImage}
                 generatingIds={videoGenerating}
+                imageGeneratingIds={imageGenerating}
                 onEditScene={editScene}
                 onDeleteScene={removeScene}
                 onMoveScene={moveScene}
+                projectId={projectId}
               />
               <div className="mt-4">
                 <button
@@ -503,14 +576,9 @@ export default function ProjectWorkspacePage() {
                 <div className="text-xs font-semibold uppercase tracking-widest text-flex-muted">
                   Preview final
                 </div>
-                <h2 className="text-2xl font-black">
-                  {project.concept.title}
-                </h2>
+                <h2 className="text-2xl font-black">{project.concept.title}</h2>
               </div>
-              <AssemblyPlayer
-                scenes={project.scenes}
-                title={project.concept.title}
-              />
+              <AssemblyPlayer scenes={project.scenes} title={project.concept.title} />
 
               <div className="mt-4 flex justify-center">
                 <Link
@@ -520,6 +588,55 @@ export default function ProjectWorkspacePage() {
                   Ouvrir l&apos;editeur video
                 </Link>
               </div>
+
+              <div className="mt-6">
+                <DragDropTimeline
+                  scenes={project.scenes}
+                  audioTrackUrl={project.audioTrackUrl}
+                  onReorder={(nextScenes) => save({ scenes: nextScenes })}
+                />
+              </div>
+
+              <div className="mt-6">
+                <SfxPromptPanel projectId={projectId} />
+              </div>
+
+              <div className="mt-6">
+                <RenderSettingsPanel
+                  lutPreset={project.lutPreset}
+                  targetFps={project.targetFps}
+                  masterCodec={project.masterCodec}
+                  colorSpace={project.colorSpace}
+                  hdrPeakNits={project.hdrPeakNits}
+                  audioLayout={project.audioLayout}
+                  plan={user?.plan}
+                  atmosMinutesUsed={atmosUsage?.used}
+                  atmosMinutesQuota={atmosUsage?.quota}
+                  onChange={(patch) => save(patch as Partial<Project>)}
+                />
+              </div>
+
+              <div className="mt-6">
+                <FinalRenderButton
+                  projectId={projectId}
+                  existingOutputUrl={project.outputUrl}
+                  onRendered={(url) => save({ outputUrl: url })}
+                />
+              </div>
+
+              {project.visibility === "public" && (
+                <div className="mt-6">
+                  <TemplateToggle
+                    projectId={projectId}
+                    initialIsTemplate={Boolean(project.isTemplate)}
+                    initialCategory={project.templateCategory}
+                    initialDescription={project.templateDescription}
+                    visibility={project.visibility}
+                    formatHint={project.format}
+                    onChange={(next) => save(next)}
+                  />
+                </div>
+              )}
 
               {/* Cover picker + Series settings */}
               <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -569,9 +686,7 @@ export default function ProjectWorkspacePage() {
                     <input
                       placeholder="Nom de la série"
                       value={project.seriesTitle || ""}
-                      onChange={(e) =>
-                        save({ seriesTitle: e.target.value })
-                      }
+                      onChange={(e) => save({ seriesTitle: e.target.value })}
                     />
                     <input
                       type="number"
@@ -584,16 +699,14 @@ export default function ProjectWorkspacePage() {
                           episodeNumber: Number(e.target.value) || undefined,
                           seriesId:
                             project.seriesId ||
-                            `ser_${Date.now()}_${Math.random()
-                              .toString(36)
-                              .slice(2, 6)}`,
+                            `ser_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
                         })
                       }
                     />
                   </div>
                   <div className="mt-2 text-[10px] text-flex-muted">
-                    Groupe tes projets en saison. Les épisodes apparaissent
-                    liés sur la page de lecture.
+                    Groupe tes projets en saison. Les épisodes apparaissent liés sur la page de
+                    lecture.
                   </div>
                 </div>
               </div>
@@ -607,10 +720,7 @@ export default function ProjectWorkspacePage() {
                   videoUrl={project.scenes?.[0]?.videoUrl}
                   audioUrl={project.scenes?.[0]?.voiceoverUrl}
                 />
-                <CollaboratorPanel
-                  projectId={projectId!}
-                  isOwner={project.ownerId === user.id}
-                />
+                <CollaboratorPanel projectId={projectId!} isOwner={project.ownerId === user.id} />
               </div>
 
               <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
@@ -624,9 +734,7 @@ export default function ProjectWorkspacePage() {
                 <div className="flex items-center gap-2">
                   <select
                     value={project.visibility || "private"}
-                    onChange={(e) =>
-                      publish(e.target.value as "private" | "followers" | "public")
-                    }
+                    onChange={(e) => publish(e.target.value as "private" | "followers" | "public")}
                     className="!w-auto !py-2.5 !text-sm !font-semibold"
                   >
                     <option value="private">🔒 Privé — moi seul</option>
@@ -646,8 +754,8 @@ export default function ProjectWorkspacePage() {
               « {project.concept.title} » est visible sur le feed public
             </h2>
             <p className="mx-auto mb-4 max-w-xl text-sm text-flex-muted">
-              Ton film apparaît désormais dans le catalogue communautaire,
-              recommandé aux spectateurs qui aiment le même genre.
+              Ton film apparaît désormais dans le catalogue communautaire, recommandé aux
+              spectateurs qui aiment le même genre.
             </p>
             <div className="flex items-center justify-center gap-3">
               <Link

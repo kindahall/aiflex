@@ -50,7 +50,18 @@ function rowToUser(row: any): UserRecord {
     bio: row.bio ?? undefined,
     emailVerified: row.emailVerified,
     emailVerifiedAt: row.emailVerifiedAt ? toEpoch(row.emailVerifiedAt) : undefined,
-    usage: row.usageMonth ? { month: row.usageMonth, videosGenerated: row.usageVideos } : undefined,
+    usage: row.usageMonth
+      ? {
+          month: row.usageMonth,
+          videosGenerated: row.usageVideos,
+          imagesGenerated: row.usageImages,
+          atmosMinutesUsed: row.atmosMinutesUsed ?? 0,
+        }
+      : undefined,
+    atmosMinutesQuota:
+      row.atmosMinutesQuota === null || row.atmosMinutesQuota === undefined
+        ? undefined
+        : row.atmosMinutesQuota,
     plan: (row.plan as UserRecord["plan"]) ?? undefined,
     stripeCustomerId: row.stripeCustomerId ?? undefined,
     stripeSubscriptionId: row.stripeSubscriptionId ?? undefined,
@@ -99,7 +110,84 @@ function rowToProject(row: any): Project {
     author: row.author ?? undefined,
     audioTrackUrl: row.audioTrackUrl ?? undefined,
     audioTrackStatus: row.audioTrackStatus ?? undefined,
+    targetFps: coerceTargetFps(row.targetFps),
+    lutPreset: coerceLutPreset(row.lutPreset),
+    outputUrl: row.outputUrl ?? undefined,
+    masterUrl: row.masterUrl ?? undefined,
+    masterCodec: coerceMasterCodec(row.masterCodec),
+    colorSpace: coerceColorSpace(row.colorSpace),
+    hdrPeakNits: coerceHdrPeakNits(row.hdrPeakNits),
+    audioLayout: coerceAudioLayout(row.audioLayout),
+    surroundCodec: coerceSurroundCodec(row.surroundCodec),
+    audioLayoutStatus: coerceAudioLayoutStatus(row.audioLayoutStatus),
   };
+}
+
+function coerceTargetFps(v: unknown): Project["targetFps"] {
+  if (v === 24 || v === 30 || v === 60) return v;
+  return undefined;
+}
+
+function coerceLutPreset(v: unknown): Project["lutPreset"] {
+  if (
+    v === "none" ||
+    v === "cinema" ||
+    v === "noir" ||
+    v === "teal-orange" ||
+    v === "desat" ||
+    v === "warm" ||
+    v === "aces-rec709" ||
+    v === "aces-rec2020" ||
+    v === "aces-pq1000" ||
+    v === "aces-v2-rec709-true" ||
+    v === "aces-v2-p3-true" ||
+    v === "aces-v2-pq1000-true" ||
+    v === "aces-v2-pq4000-true"
+  ) {
+    return v;
+  }
+  return undefined;
+}
+
+function coerceMasterCodec(v: unknown): Project["masterCodec"] {
+  if (v === "prores" || v === "dnxhr") return v;
+  return undefined;
+}
+
+function coerceColorSpace(v: unknown): Project["colorSpace"] {
+  if (v === "sdr" || v === "hdr10") return v;
+  return undefined;
+}
+
+function coerceHdrPeakNits(v: unknown): Project["hdrPeakNits"] {
+  if (v === 600 || v === 1000 || v === 4000 || v === 10000) return v;
+  return undefined;
+}
+
+function coerceAudioLayout(v: unknown): Project["audioLayout"] {
+  if (
+    v === "stereo" ||
+    v === "5.1" ||
+    v === "7.1" ||
+    v === "ambisonic" ||
+    v === "ambisonic-hoa2" ||
+    v === "ambisonic-hoa3" ||
+    v === "atmos" ||
+    v === "atmos-stub"
+  ) {
+    return v;
+  }
+  return undefined;
+}
+
+function coerceAudioLayoutStatus(v: unknown): Project["audioLayoutStatus"] {
+  if (v === "pending-atmos" || v === "ready" || v === "failed") return v;
+  return undefined;
+}
+
+function coerceSurroundCodec(v: unknown): Project["surroundCodec"] {
+  if (v === "ac3" || v === "eac3") return v;
+  return undefined;
 }
 
 function rowToComment(row: any): Comment {
@@ -355,34 +443,111 @@ function currentMonthKey(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-export async function getCurrentUsage(
-  userId: string
-): Promise<{ month: string; videosGenerated: number }> {
+export async function getCurrentUsage(userId: string): Promise<{
+  month: string;
+  videosGenerated: number;
+  imagesGenerated: number;
+  atmosMinutesUsed: number;
+}> {
   const month = currentMonthKey();
   const row = await prisma.user.findUnique({
     where: { id: userId },
-    select: { usageMonth: true, usageVideos: true },
+    select: {
+      usageMonth: true,
+      usageVideos: true,
+      usageImages: true,
+      atmosMinutesUsed: true,
+    },
   });
   if (!row || row.usageMonth !== month) {
-    return { month, videosGenerated: 0 };
+    return { month, videosGenerated: 0, imagesGenerated: 0, atmosMinutesUsed: 0 };
   }
-  return { month, videosGenerated: row.usageVideos };
+  return {
+    month,
+    videosGenerated: row.usageVideos,
+    imagesGenerated: row.usageImages,
+    atmosMinutesUsed: row.atmosMinutesUsed ?? 0,
+  };
 }
 
 export async function incrementVideoUsage(userId: string, n = 1): Promise<number> {
   const month = currentMonthKey();
   const row = await prisma.user.findUnique({
     where: { id: userId },
-    select: { usageMonth: true, usageVideos: true },
+    select: { usageMonth: true, usageVideos: true, usageImages: true },
   });
   if (!row) throw new Error("Utilisateur introuvable");
 
-  const currentCount = row.usageMonth === month ? row.usageVideos : 0;
-  const newCount = currentCount + n;
+  const sameMonth = row.usageMonth === month;
+  const newCount = (sameMonth ? row.usageVideos : 0) + n;
 
   await prisma.user.update({
     where: { id: userId },
-    data: { usageMonth: month, usageVideos: newCount },
+    data: {
+      usageMonth: month,
+      usageVideos: newCount,
+      // Reset image counter when the month rolls over.
+      usageImages: sameMonth ? row.usageImages : 0,
+    },
+  });
+  return newCount;
+}
+
+export async function incrementImageUsage(userId: string, n = 1): Promise<number> {
+  const month = currentMonthKey();
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { usageMonth: true, usageVideos: true, usageImages: true },
+  });
+  if (!row) throw new Error("Utilisateur introuvable");
+
+  const sameMonth = row.usageMonth === month;
+  const newCount = (sameMonth ? row.usageImages : 0) + n;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      usageMonth: month,
+      usageImages: newCount,
+      usageVideos: sameMonth ? row.usageVideos : 0,
+    },
+  });
+  return newCount;
+}
+
+/**
+ * Increment a user's Atmos cloud minutes usage (Prisma backend).
+ * Rotates the monthly bucket when `usageMonth` is stale — same pattern as
+ * video/image counters. Only whole minutes are charged; callers are
+ * expected to ceil() a per-render estimate before calling.
+ */
+export async function incrementAtmosMinutesUsed(userId: string, minutes: number): Promise<number> {
+  const month = currentMonthKey();
+  const row = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      usageMonth: true,
+      usageVideos: true,
+      usageImages: true,
+      atmosMinutesUsed: true,
+    },
+  });
+  if (!row) throw new Error("Utilisateur introuvable");
+
+  const sameMonth = row.usageMonth === month;
+  const delta = Math.max(0, minutes);
+  const newCount = (sameMonth ? row.atmosMinutesUsed : 0) + delta;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      usageMonth: month,
+      atmosMinutesUsed: newCount,
+      // Roll over video/image counters too if we're crossing months so
+      // the single-source-of-truth `usageMonth` stays consistent.
+      usageVideos: sameMonth ? row.usageVideos : 0,
+      usageImages: sameMonth ? row.usageImages : 0,
+    },
   });
   return newCount;
 }
@@ -493,6 +658,8 @@ export async function createProject(
       author: input.author,
       audioTrackUrl: input.audioTrackUrl,
       audioTrackStatus: input.audioTrackStatus,
+      targetFps: input.targetFps,
+      lutPreset: input.lutPreset,
     },
   });
   return rowToProject(row);
@@ -528,6 +695,16 @@ export async function updateProject(
   if (patch.author !== undefined) data.author = patch.author;
   if (patch.audioTrackUrl !== undefined) data.audioTrackUrl = patch.audioTrackUrl;
   if (patch.audioTrackStatus !== undefined) data.audioTrackStatus = patch.audioTrackStatus;
+  if (patch.targetFps !== undefined) data.targetFps = patch.targetFps;
+  if (patch.lutPreset !== undefined) data.lutPreset = patch.lutPreset;
+  if (patch.outputUrl !== undefined) data.outputUrl = patch.outputUrl;
+  if (patch.masterUrl !== undefined) data.masterUrl = patch.masterUrl;
+  if (patch.masterCodec !== undefined) data.masterCodec = patch.masterCodec;
+  if (patch.colorSpace !== undefined) data.colorSpace = patch.colorSpace;
+  if (patch.hdrPeakNits !== undefined) data.hdrPeakNits = patch.hdrPeakNits;
+  if (patch.audioLayout !== undefined) data.audioLayout = patch.audioLayout;
+  if (patch.surroundCodec !== undefined) data.surroundCodec = patch.surroundCodec;
+  if (patch.audioLayoutStatus !== undefined) data.audioLayoutStatus = patch.audioLayoutStatus;
 
   // updatedAt is handled by @updatedAt in schema
   const row = await prisma.project.update({ where: { id }, data });
@@ -1093,9 +1270,14 @@ export async function getSettings(): Promise<PlatformSettings> {
     narrativeModel: row.narrativeModel,
     reasoningLevel: row.reasoningLevel,
     videoModel: row.videoModel,
+    imageModel: row.imageModel ?? DEFAULT_PLATFORM_SETTINGS.imageModel,
     allowSignups: row.allowSignups,
     maxScenesPerProject: row.maxScenesPerProject,
     monthlyVideoQuota: row.monthlyVideoQuota,
+    monthlyImageQuota: row.monthlyImageQuota ?? DEFAULT_PLATFORM_SETTINGS.monthlyImageQuota,
+    enabledImageModels: Array.isArray(row.enabledImageModels)
+      ? (row.enabledImageModels as string[])
+      : [],
     apiKeys: row.apiKeys as PlatformSettings["apiKeys"],
     siteContent: row.siteContent as unknown as PlatformSettings["siteContent"],
     ttsModel: row.ttsModel,

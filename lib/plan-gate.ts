@@ -24,6 +24,9 @@ const FEATURE_PLANS: Record<string, PlanId> = {
   // the "skipped for now" TODOs in /api/series/create and /api/sequel.
   "series-create": "studio",
   "sequel-create": "studio",
+  // Real Dolby Atmos encoding via Dolby.io (~$0.30/min). Studio+ only;
+  // lower tiers auto-downgrade to the FOSS atmos-stub 5.1 E-AC-3.
+  "atmos-real": "studio",
 };
 
 const PLAN_RANK: Record<PlanId, number> = {

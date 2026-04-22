@@ -27,6 +27,13 @@ model User {
   emailVerifiedAt DateTime?
   usageMonth      String?
   usageVideos     Int       @default(0)
+  usageImages     Int       @default(0)
+  // Atmos cloud usage — cumulative minutes consumed in `usageMonth`.
+  // Reset whenever usageMonth rolls over. Quota defaults come from the
+  // plan (see lib/plans.ts atmosMinutesPerMonth); null here means "use
+  // the plan default", non-null is an explicit admin override.
+  atmosMinutesUsed  Int  @default(0)
+  atmosMinutesQuota Int?
 
   // Stripe/billing
   plan                 String    @default("free")
@@ -145,6 +152,17 @@ model Project {
   audioTrackUrl    String?
   audioTrackStatus String?
   contentRating    String?
+  targetFps        Int?    // 24 | 30 | 60. Defaults to 30 at compose time.
+  lutPreset        String? // "none" | "cinema" | "noir" | "teal-orange" | "desat" | "warm"
+  masterCodec      String? // "prores" | "dnxhr". Studio+ only. Produces parallel .mov master.
+  colorSpace       String? // "sdr" | "hdr10". Studio+ only. hdr10 = Rec.2020 PQ H.265.
+  hdrPeakNits      Int?    // 600 | 1000 | 4000 | 10000. Peak luminance for HDR10 master-display metadata.
+  audioLayout      String? // "stereo" | "5.1". 5.1 upmixes via pan into AC-3/E-AC-3.
+  surroundCodec    String? // "ac3" | "eac3". Only used when audioLayout=5.1.
+  // "pending-atmos" while a Dolby.io cloud transcode is in flight,
+  // "ready" once the webhook has persisted the output, "failed" on
+  // unrecoverable provider error. Null when no async atmos job applies.
+  audioLayoutStatus String?
 
   // V7 : film metadata
   uploadType        String  @default("ai_generated") // "ai_generated" | "user_upload"
@@ -157,11 +175,17 @@ model Project {
   composition       Json?
   errorMessage      String?
   outputUrl         String?
+  masterUrl         String?  // Editorial ProRes/DNxHR master (Studio+)
   thumbnailUrl      String?
   thumbnailVariants Json?
   slug              String? @unique
   isFreeContent     Boolean @default(false)
   isAdult           Boolean @default(false)
+
+  // Templates (Wave 2.5) — reusable starting points for new projects.
+  isTemplate          Boolean @default(false)
+  templateCategory    String?
+  templateDescription String?
 
   // Cercle privé
   inviteToken   String?  @unique
@@ -225,6 +249,7 @@ model Project {
   @@index([adminReviewStatus])
   @@index([seriesId])
   @@index([isAdult])
+  @@index([isTemplate])
 }
 
 // ===========================================================================
@@ -581,9 +606,12 @@ model PlatformSettings {
   narrativeModel         String  @default("gpt-5.4")
   reasoningLevel         String  @default("medium")
   videoModel             String  @default("fal-ai/bytedance/seedance/v2/pro/text-to-video")
+  imageModel             String  @default("fal-ai/flux/schnell")
   allowSignups           Boolean @default(true)
   maxScenesPerProject    Int     @default(24)
   monthlyVideoQuota      Int     @default(30)
+  monthlyImageQuota      Int     @default(100)
+  enabledImageModels     Json    @default("[]")
   apiKeys                Json    @default("{}")
   siteContent            Json
   ttsModel               String  @default("openai-tts-1-hd")
@@ -826,7 +854,14 @@ model AiCostEntry {
   model        String?
   userId       String?
   // Cost in USD * 1_000_000 to keep an integer column. 1 = $0.000001.
-  costMicroUsd Int
+  // This is the ESTIMATED cost written at call time. Real invoice cost
+  // is reconciled later into `actualCostMicroUsd` (see ai-cost-reconcile).
+  costMicroUsd       Int
+  /// Real billed cost, backfilled by the reconciliation script from
+  /// the provider's invoice/export. Null until reconciled.
+  actualCostMicroUsd Int?
+  /// Timestamp of last reconciliation pass. Null until reconciled.
+  reconciledAt       DateTime?
   inputTokens  Int?
   outputTokens Int?
   durationMs   Int?
@@ -835,6 +870,7 @@ model AiCostEntry {
 
   @@index([provider, createdAt])
   @@index([userId, createdAt])
+  @@index([reconciledAt])
 }
 
 model DMCANotice {
@@ -985,6 +1021,34 @@ model CharacterLicense {
 }
 
 // ===========================================================================
+// AVATARS (Wave 4.1 — HeyGen-like talking presenters)
+// ===========================================================================
+
+model Avatar {
+  id                String   @id @default(cuid())
+  ownerId           String
+  name              String
+  description       String?
+  /// Driving portrait image (for photo-to-talking) or first-frame reference
+  referenceImageUrl String
+  /// Optional pre-recorded idle video loop for video-based avatars
+  idleVideoUrl      String?
+  /// ElevenLabs voice_id bound to this avatar
+  voiceId           String?
+  /// Library visibility (public = anyone can use, false = owner only)
+  isPublic          Boolean  @default(false)
+  /// Curated "official" avatar flag, set by admin
+  isOfficial        Boolean  @default(false)
+  tags              String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([isOfficial])
+}
+
+// ===========================================================================
 // AD LEAD (V8 §A4 — /advertise lead capture)
 // ===========================================================================
 
@@ -1034,8 +1098,274 @@ model Block {
 }
 
 // ===========================================================================
+// BRAND KIT (Wave 5.1 — HeyGen-style brand consistency for B2B)
+// ===========================================================================
+
+model BrandKit {
+  id          String   @id @default(cuid())
+  ownerId     String
+  name        String
+  /// Hex palette stored as JSON: { primary, secondary, accent, neutral, background, text }
+  palette     Json
+  /// Typography config: { displayFont, bodyFont, headingWeight, bodyWeight }
+  typography  Json
+  /// Voice/tone guidance injected into narrative prompts (adjectives, do/don't lists)
+  tone        Json?
+  /// Logo + watermark + brand element URLs, stored as array
+  assets      BrandKitAsset[]
+  /// Optional default tagline to inject into outro templates
+  tagline     String?
+  /// Default watermark position (tl, tr, bl, br, none)
+  watermarkPos String  @default("br")
+  isPublic    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model BrandKitAsset {
+  id         String   @id @default(cuid())
+  brandKitId String
+  brandKit   BrandKit @relation(fields: [brandKitId], references: [id], onDelete: Cascade)
+  kind       String   // "logo_primary" | "logo_reverse" | "watermark" | "background" | "element" | "font"
+  url        String
+  alt        String?
+  createdAt  DateTime @default(now())
+
+  @@index([brandKitId])
+}
+
+// ===========================================================================
+// PIKA EFFECTS CATALOG (Wave 5.2 — 15 parametric visual effects)
+// ===========================================================================
+
+model PikaEffect {
+  id               String   @id @default(cuid())
+  /// Stable slug used in UI + prompt router (e.g. "explode", "cake-ify", "squish")
+  slug             String   @unique
+  label            String
+  description      String
+  /// Prompt template with `{{subject}}` substitution hook
+  promptTemplate   String
+  /// Optional negative prompt template
+  negativePrompt   String?
+  /// Which providers this effect is tuned for; others fall back to prompt-only
+  providers        String[] @default([])
+  /// Reference ControlNet mode if the provider supports it ("softedge" | "canny" | "depth" | "pose" | null)
+  controlNet       String?
+  /// Duration hint in seconds for the generator
+  defaultDuration  Int      @default(4)
+  /// User-facing preview clip stored in S3/R2
+  previewUrl       String?
+  /// Category for grouping in picker ("motion" | "transform" | "destruction" | "material" | "camera")
+  category         String   @default("motion")
+  /// Whether users on free plan can use this effect
+  isFree           Boolean  @default(true)
+  /// Sorting weight in the UI
+  weight           Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([category])
+  @@index([isFree])
+}
+
+// ===========================================================================
+// VOICE CATALOG (Wave 5.3 — 400+ prebuilt voices a la HeyGen)
+// ===========================================================================
+
+model VoiceProfile {
+  id           String   @id @default(cuid())
+  /// Provider id (e.g. ElevenLabs voice_id or OpenAI TTS voice name)
+  providerId   String
+  provider     String   // "elevenlabs" | "openai" | "playht" | "resemble"
+  name         String
+  language     String   @default("fr")
+  gender       String   @default("neutral") // "male" | "female" | "neutral"
+  /// Comma-free tags: "young", "deep", "warm", "narrator", "news-anchor"
+  tags         String[] @default([])
+  previewUrl   String?
+  /// Whether admin has promoted this to the public catalog
+  isPublic     Boolean  @default(true)
+  isOfficial   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([provider, providerId])
+  @@index([language])
+  @@index([isPublic])
+  @@index([isOfficial])
+}
+
+// ===========================================================================
+// MODEL BENCH (Wave 5.4 — run the same prompt across N models + compare)
+// ===========================================================================
+
+model ModelBenchRun {
+  id          String            @id @default(cuid())
+  ownerId     String
+  name        String
+  prompt      String
+  /// Optional reference image URL to use consistently across all models
+  imageUrl    String?
+  durationSec Int               @default(5)
+  aspectRatio String            @default("16:9")
+  resolution  String            @default("720p")
+  status      String            @default("pending") // "pending" | "running" | "done" | "error"
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  results     BenchRunResult[]
+
+  @@index([ownerId])
+  @@index([status])
+}
+
+model BenchRunResult {
+  id              String        @id @default(cuid())
+  benchRunId      String
+  benchRun        ModelBenchRun @relation(fields: [benchRunId], references: [id], onDelete: Cascade)
+  /// Full provider model id (e.g. "fal-ai/bytedance/seedance/v2/pro/text-to-video")
+  modelId         String
+  status          String        @default("pending") // "pending" | "running" | "done" | "error"
+  videoUrl        String?
+  errorMessage    String?
+  /// Latency in ms between submit and completion
+  latencyMs       Int?
+  /// Actual cost billed for this generation (in microUSD)
+  costMicroUsd    Int?
+  /// User-submitted rating 1..5 (null until voted)
+  rating          Int?
+  /// Optional comment from the rater
+  comment         String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([benchRunId, modelId])
+  @@index([benchRunId])
+  @@index([modelId])
+}
+
+// ===========================================================================
+// CAMERA KEYFRAME PATH (Wave 5.5 — Director Mode, editable camera curves)
+// ===========================================================================
+
+model CameraKeyframePath {
+  id          String   @id @default(cuid())
+  projectId   String
+  sceneId     String
+  /// Keyframes as JSON: [{ t: 0..1, pan, tilt, zoom, roll, focalMm, fx? }]
+  keyframes   Json
+  /// Derived prompt fragment injected into scene generation
+  promptFrag  String?
+  /// Optional raw pixel mask for Motion-Brush (base64 PNG data URL reference)
+  maskUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([projectId, sceneId])
+  @@index([projectId])
+}
+
+// ===========================================================================
+// ACT ONE FACE CAPTURE (Wave 5.6 — Runway Act One facial capture)
+// ===========================================================================
+
+model FaceCaptureTrack {
+  id          String   @id @default(cuid())
+  ownerId     String
+  projectId   String?
+  sceneId     String?
+  /// Mediapipe FaceLandmarker blendshape track (Float32 per frame) stored as blob URL
+  trackUrl    String
+  /// Sample rate in Hz (usually 30 or 60)
+  sampleRate  Int      @default(30)
+  /// Duration of the capture in milliseconds
+  durationMs  Int
+  /// Optional reference image of the driving actor (for preview)
+  previewUrl  String?
+  createdAt   DateTime @default(now())
+
+  @@index([ownerId])
+  @@index([projectId])
+}
+
+// ===========================================================================
+// SSO / SCIM (Wave 5.7 — enterprise identity)
+// ===========================================================================
+
+model SsoConnection {
+  id           String   @id @default(cuid())
+  /// Customer-chosen slug (used in metadata URL): /saml/{slug}/metadata
+  slug         String   @unique
+  /// "saml" | "oidc"
+  kind         String   @default("saml")
+  /// Display name for admin UI
+  name         String
+  /// Domain (for auto-routing email → IdP)
+  emailDomain  String?
+  /// IdP SSO entrypoint URL (SAML Redirect or OIDC authorize endpoint)
+  ssoUrl       String
+  /// IdP x509 certificate (PEM) for SAML signature verification, or OIDC JWKS URL
+  certPem      String?
+  jwksUrl      String?
+  /// Audience / SP entity ID
+  audience     String
+  /// OIDC client id / client secret pair (null for SAML)
+  oidcClientId String?
+  oidcSecret   String?
+  /// Enabled flag; disabled connections cannot auth
+  enabled      Boolean  @default(true)
+  /// SCIM provisioning: generated bearer token (sha256-hashed for storage)
+  scimTokenHash String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([emailDomain])
+  @@index([enabled])
+}
+
+// ===========================================================================
 // API USAGE TRACKING (V8 §25.8)
 // ===========================================================================
+
+// ===========================================================================
+// DOLBY.IO ASYNC TRANSCODE JOBS (Wave 11.7 — webhook-driven Atmos)
+// ===========================================================================
+//
+// Background ingest of Dolby.io Media API jobs. The compose pipeline
+// submits a job with `callback_url` pointing to /api/webhooks/dolbyio
+// and creates a row here keyed on the returned `jobId`. When the webhook
+// arrives, we verify the HMAC signature, update the row's status, and
+// kick off a download-and-persist worker for Succeeded jobs.
+
+model DolbyIOJob {
+  id          String   @id @default(cuid())
+  /// Dolby.io job_id returned by POST /v1/media/transcode. Unique per
+  /// account, so we use it as the idempotency key for the webhook path.
+  jobId       String   @unique
+  projectId   String
+  /// Project owner — denormalised so the download worker can notify
+  /// without an extra join.
+  ownerId     String
+  /// "pending" | "running" | "succeeded" | "failed"
+  status      String   @default("pending")
+  /// Dolby.io-presigned URL for the transcoded output, populated by the
+  /// webhook. The download worker fetches this into our own storage so
+  /// we don't depend on the ~24h presigned window.
+  resultUrl   String?
+  /// Short error string when status = "failed" (for ops visibility).
+  errorText   String?
+  /// "dlb://" storage key of the output in Dolby.io temporary storage.
+  /// Needed to re-download via SDK if the presigned URL expired.
+  outputDlb   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([ownerId])
+  @@index([status])
+}
 
 model DailyApiUsage {
   id              String   @id @default(cuid())

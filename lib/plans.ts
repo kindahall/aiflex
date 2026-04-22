@@ -14,6 +14,13 @@ export interface Plan {
   stripeAnnualPriceId: string | null;
   /** Max profiles on this plan — enforced in /who-is-watching. */
   maxProfiles?: number;
+  /**
+   * Monthly Dolby Atmos cloud minutes allowance. Dolby.io currently
+   * bills ~$0.30/output-minute for JOC transcoding, so unbounded access
+   * on Free or Pro would produce unrecoverable losses; those tiers must
+   * stay at 0 and fall through to the atmos-stub 5.1 encode.
+   */
+  atmosMinutesPerMonth: number;
 }
 
 export const PLANS: Record<PlanId, Plan> = {
@@ -22,17 +29,13 @@ export const PLANS: Record<PlanId, Plan> = {
     name: "Gratuit",
     monthlyVideos: 10,
     maxScenes: 12,
-    features: [
-      "10 vidéos/mois",
-      "12 scènes max",
-      "Modèles standards",
-      "720p",
-    ],
+    features: ["10 vidéos/mois", "12 scènes max", "Modèles standards", "720p"],
     price: 0,
     annualPrice: 0,
     stripePriceId: null,
     stripeAnnualPriceId: null,
     maxProfiles: 1,
+    atmosMinutesPerMonth: 0,
   },
   pro: {
     id: "pro",
@@ -48,9 +51,10 @@ export const PLANS: Record<PlanId, Plan> = {
       "Priorité de génération",
     ],
     price: 14.99,
-    annualPrice: 143.90, // ~11.99/mo, 20% off
+    annualPrice: 143.9, // ~11.99/mo, 20% off
     stripePriceId: process.env.STRIPE_PRO_PRICE_ID || null,
     stripeAnnualPriceId: process.env.STRIPE_PRO_ANNUAL_PRICE_ID || null,
+    atmosMinutesPerMonth: 0,
   },
   studio: {
     id: "studio",
@@ -68,10 +72,11 @@ export const PLANS: Record<PlanId, Plan> = {
       "Support prioritaire",
     ],
     price: 39.99,
-    annualPrice: 383.90, // ~31.99/mo, 20% off
+    annualPrice: 383.9, // ~31.99/mo, 20% off
     stripePriceId: process.env.STRIPE_STUDIO_PRICE_ID || null,
     stripeAnnualPriceId: process.env.STRIPE_STUDIO_ANNUAL_PRICE_ID || null,
     maxProfiles: 2,
+    atmosMinutesPerMonth: 30,
   },
   family: {
     id: "family",
@@ -87,15 +92,18 @@ export const PLANS: Record<PlanId, Plan> = {
       "50 vidéos partagées/mois",
     ],
     price: 14.99,
-    annualPrice: 149.90,
+    annualPrice: 149.9,
     stripePriceId: process.env.STRIPE_FAMILY_PRICE_ID || null,
     stripeAnnualPriceId: process.env.STRIPE_FAMILY_ANNUAL_PRICE_ID || null,
     maxProfiles: 4,
+    atmosMinutesPerMonth: 120,
   },
 } as const;
 
 /** Return the plan object for a user (defaults to free). */
-export function getPlanForUser(user: Pick<User, "role"> & Partial<Pick<UserRecord, "plan" | "planExpiresAt">>): Plan {
+export function getPlanForUser(
+  user: Pick<User, "role"> & Partial<Pick<UserRecord, "plan" | "planExpiresAt">>
+): Plan {
   // Admins always get Studio-level access.
   if (user.role === "admin") return PLANS.studio;
 
@@ -115,7 +123,26 @@ export function getPlanLimits(planId: PlanId) {
   return {
     monthlyVideos: plan.monthlyVideos,
     maxScenes: plan.maxScenes,
+    atmosMinutes: plan.atmosMinutesPerMonth,
   };
+}
+
+/**
+ * Resolve the effective monthly Atmos cloud quota for a user. An explicit
+ * `atmosMinutesQuota` override always wins; otherwise the plan default
+ * applies. Admins are treated as effectively unbounded (Number.MAX_SAFE_INTEGER)
+ * to match `checkPlanAccess`'s admin bypass.
+ */
+export function getAtmosQuotaForUser(
+  user: Pick<User, "role"> &
+    Partial<Pick<UserRecord, "plan" | "planExpiresAt" | "atmosMinutesQuota">>
+): number {
+  if (user.role === "admin") return Number.MAX_SAFE_INTEGER;
+  if (typeof user.atmosMinutesQuota === "number" && user.atmosMinutesQuota >= 0) {
+    return user.atmosMinutesQuota;
+  }
+  const plan = getPlanForUser(user as User & Partial<UserRecord>);
+  return plan.atmosMinutesPerMonth;
 }
 
 /** Check whether a user still has video generation quota left this month. */
@@ -129,10 +156,7 @@ export function canUserGenerate(
   const month = currentMonthKey();
 
   // If usage is from a different month, counter is effectively 0.
-  const used =
-    user.usage && user.usage.month === month
-      ? user.usage.videosGenerated
-      : 0;
+  const used = user.usage && user.usage.month === month ? user.usage.videosGenerated : 0;
 
   return used < plan.monthlyVideos;
 }

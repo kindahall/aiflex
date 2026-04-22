@@ -64,7 +64,7 @@ let initPromise: Promise<void> | null = null;
 let prodGuardLogged = false;
 
 // 96 bits CSPRNG — IDs are exposed in URLs, must not be guessable.
-function secureIdSuffix(): string {
+export function secureIdSuffix(): string {
   return randomBytes(12).toString("base64url");
 }
 
@@ -357,14 +357,21 @@ function currentMonthKey(): string {
 export async function getCurrentUsage(userId: string): Promise<{
   month: string;
   videosGenerated: number;
+  imagesGenerated: number;
+  atmosMinutesUsed: number;
 }> {
   await ensureInit();
   const u = cache!.users.find((x) => x.id === userId);
   const month = currentMonthKey();
   if (!u || !u.usage || u.usage.month !== month) {
-    return { month, videosGenerated: 0 };
+    return { month, videosGenerated: 0, imagesGenerated: 0, atmosMinutesUsed: 0 };
   }
-  return { month, videosGenerated: u.usage.videosGenerated };
+  return {
+    month,
+    videosGenerated: u.usage.videosGenerated,
+    imagesGenerated: u.usage.imagesGenerated ?? 0,
+    atmosMinutesUsed: u.usage.atmosMinutesUsed ?? 0,
+  };
 }
 
 /**
@@ -380,11 +387,48 @@ export async function incrementVideoUsage(userId: string, n = 1): Promise<number
   if (!u) throw new Error("Utilisateur introuvable");
   const month = currentMonthKey();
   if (!u.usage || u.usage.month !== month) {
-    u.usage = { month, videosGenerated: 0 };
+    u.usage = { month, videosGenerated: 0, imagesGenerated: 0 };
   }
   u.usage.videosGenerated += n;
   await persist();
   return u.usage.videosGenerated;
+}
+
+/**
+ * Increment a user's image generation counter by `n`. Resets the bucket
+ * if the stored month is stale. Returns the new counter value.
+ */
+export async function incrementImageUsage(userId: string, n = 1): Promise<number> {
+  await ensureInit();
+  const u = cache!.users.find((x) => x.id === userId);
+  if (!u) throw new Error("Utilisateur introuvable");
+  const month = currentMonthKey();
+  if (!u.usage || u.usage.month !== month) {
+    u.usage = { month, videosGenerated: 0, imagesGenerated: 0 };
+  }
+  u.usage.imagesGenerated = (u.usage.imagesGenerated ?? 0) + n;
+  await persist();
+  return u.usage.imagesGenerated;
+}
+
+/**
+ * Increment a user's Atmos cloud minutes counter. Resets the monthly
+ * bucket if `usageMonth` is stale. Minutes are rounded up before caller
+ * passes them in (we bill on whole minutes — a 12s clip counts as 1).
+ *
+ * Returns the new cumulative total for the current month.
+ */
+export async function incrementAtmosMinutesUsed(userId: string, minutes: number): Promise<number> {
+  await ensureInit();
+  const u = cache!.users.find((x) => x.id === userId);
+  if (!u) throw new Error("Utilisateur introuvable");
+  const month = currentMonthKey();
+  if (!u.usage || u.usage.month !== month) {
+    u.usage = { month, videosGenerated: 0, imagesGenerated: 0 };
+  }
+  u.usage.atmosMinutesUsed = (u.usage.atmosMinutesUsed ?? 0) + Math.max(0, minutes);
+  await persist();
+  return u.usage.atmosMinutesUsed;
 }
 
 // --- Sessions ---------------------------------------------------------
@@ -489,6 +533,26 @@ export async function listPublicProjects(): Promise<Project[]> {
   return cache!.projects
     .filter((p) => p.published && p.visibility === "public")
     .sort((a, b) => (b.publishedAt ?? b.updatedAt) - (a.publishedAt ?? a.updatedAt));
+}
+
+export async function listPublicTemplates(
+  opts: {
+    category?: string;
+    limit?: number;
+  } = {}
+): Promise<Project[]> {
+  await ensureInit();
+  const limit = opts.limit ?? 50;
+  return cache!.projects
+    .filter(
+      (p) =>
+        p.isTemplate &&
+        p.published &&
+        p.visibility === "public" &&
+        (!opts.category || p.templateCategory === opts.category)
+    )
+    .sort((a, b) => (b.publishedAt ?? b.updatedAt) - (a.publishedAt ?? a.updatedAt))
+    .slice(0, limit);
 }
 
 export async function getProjectById(id: string): Promise<Project | undefined> {

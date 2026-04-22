@@ -59,6 +59,8 @@ export const deleteUser = proxy("deleteUser");
 // --- Usage / quotas ---
 export const getCurrentUsage = proxy("getCurrentUsage");
 export const incrementVideoUsage = proxy("incrementVideoUsage");
+export const incrementImageUsage = proxy("incrementImageUsage");
+export const incrementAtmosMinutesUsed = proxy("incrementAtmosMinutesUsed");
 
 // --- Sessions ---
 export const createSession = proxy("createSession");
@@ -125,7 +127,12 @@ export const listVisibleProjects = proxy("listVisibleProjects");
 export const stats = proxy("stats");
 
 /** Strip the password hash from a user record before shipping to the client. */
-export function toPublicUser(u: { passwordHash: string; stripeCustomerId?: string; stripeSubscriptionId?: string; [key: string]: unknown }) {
+export function toPublicUser(u: {
+  passwordHash: string;
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+  [key: string]: unknown;
+}) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { passwordHash, stripeCustomerId, stripeSubscriptionId, ...rest } = u;
   return rest;
