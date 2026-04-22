@@ -1,6 +1,16 @@
 import "server-only";
 import { startWorker, stopWorker } from "./job-queue";
 import { registerVideoGenerationHandler } from "./jobs/video-generation";
+import { registerImageGenerationHandler } from "./jobs/image-generation";
+import { registerComposeFinalRenderHandler } from "./jobs/compose-final-render";
+import { registerUpscaleVideoHandler } from "./jobs/upscale-video";
+import { registerExtendVideoHandler } from "./jobs/extend-video";
+import { registerKeyframeGenerationHandler } from "./jobs/keyframe-generation";
+import { registerTalkingPhotoHandler } from "./jobs/talking-photo";
+import { registerBgRemovalHandler } from "./jobs/bg-removal";
+import { registerVideoInpaintHandler } from "./jobs/video-inpaint";
+import { registerBenchRunHandler } from "./jobs/bench-run";
+import { registerAtmosDownloadHandler } from "./jobs/atmos-download";
 
 let initialized = false;
 let shutdownRegistered = false;
@@ -15,6 +25,16 @@ export function initWorker(): void {
 
   // Register handlers
   registerVideoGenerationHandler();
+  registerImageGenerationHandler();
+  registerComposeFinalRenderHandler();
+  registerUpscaleVideoHandler();
+  registerExtendVideoHandler();
+  registerKeyframeGenerationHandler();
+  registerTalkingPhotoHandler();
+  registerBgRemovalHandler();
+  registerVideoInpaintHandler();
+  registerBenchRunHandler();
+  registerAtmosDownloadHandler();
 
   // Start the worker with configured concurrency
   const concurrency = parseInt(process.env.JOB_CONCURRENCY || "2", 10);
